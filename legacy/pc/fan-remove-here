@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# fan-remove-here <folder> - used by the Dolphin right-click menu on a game in ~/Games/NonSteam.
+# Backs up the saves to the NAS, then deletes the local copy. The game stays in Steam.
+LOCAL=${FAN_LOCAL:-$HOME/Games/NonSteam}
+dir=$(readlink -f "$1")
+note() { command -v notify-send > /dev/null && notify-send -a "Fan games" -i edit-delete "Fan games" "$1"; }
+# climb up to the game folder (the one with the .nas-complete marker)
+while [[ $dir == "$LOCAL"/* && ! -f $dir/.nas-complete ]]; do dir=$(dirname "$dir"); done
+if [[ ! -f $dir/.nas-complete ]]; then
+    note "That isn't a downloaded fan game."; exit 1
+fi
+rel=${dir#"$LOCAL"/}
+if out=$("$HOME/.local/bin/fan-fetch" --remove "$rel" 2>&1); then
+    note "Removed ${rel##*/}. Saves are on the NAS."
+else
+    note "Not removed: $(tail -1 <<< "$out")"
+fi

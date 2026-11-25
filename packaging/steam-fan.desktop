@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Steam-Fan
+GenericName=Game shelf
+Comment=Your NAS is the shelf, your PC is the box, Steam is the launcher
+Exec=steam-fan
+Icon=steam-fan
+Terminal=false
+Categories=Game;Utility;
+StartupWMClass=steam-fan

@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# steam-fangames - start Steam, adding new fan games from the NAS first.
+# Used by the Steam menu entry instead of plain "steam", so you never run fan-sync by hand.
+# If Steam is already running, or the NAS can't be reached, it just starts Steam.
+NAS=${NAS_GAMES:-/mnt/nas-games}
+note() { command -v notify-send > /dev/null && notify-send -a "Fan games" -i steam "Fan games" "$1"; }
+
+if ! pgrep -x steam > /dev/null && ! pgrep -x steamwebhelper > /dev/null; then
+    if timeout 15 ls "$NAS/fangames" > /dev/null 2>&1; then
+        result=$(timeout 600 "$HOME/.local/bin/fan-sync" 2> /dev/null | grep -E 'added,')
+        case $result in
+            "") note "fan-sync failed. Run fan-sync in a terminal to see why." ;;
+            "0 added, 0 updated, 0 removed"*) ;;               # nothing new: stay quiet
+            *) note "${result%% (*}" ;;
+        esac
+    fi
+fi
+exec steam "$@"

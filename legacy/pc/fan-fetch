@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+# fan-fetch - lets Steam play non-Steam games that are stored on the NAS.
+#
+# fan-sync puts it in each game's Steam launch options:
+#     "/home/you/.local/bin/fan-fetch" "Fan games/Super Mario Bros/Super Mario 63" %command%
+#
+# When you press Play:
+#   1. the first time, the game is copied from the NAS to ~/Games/NonSteam and its saves are restored
+#   2. the game starts (through Proton if Steam set it up that way)
+#   3. when you quit, its saves are copied back to the NAS
+#
+# Other uses (in a terminal):
+#   fan-fetch --list               games downloaded on this PC
+#   fan-fetch --remove <name>      back up saves to the NAS, then delete the local copy
+#                                  (the game stays in Steam and downloads again on the next Play)
+#
+# Saves are two kinds, both copied to NAS/saves/fangames/<game>/:
+#   game/     files inside the game folder that differ from the NAS original (save files, settings)
+#   prefix/   the Windows user folder of the game's Proton prefix (AppData, Documents, Saved Games)
+
+set -uo pipefail
+
+NAS=${NAS_GAMES:-/mnt/nas-games}
+SRC_ROOT=$NAS/fangames
+SAVE_ROOT=$NAS/saves/fangames
+LOCAL_ROOT=${FAN_LOCAL:-$HOME/Games/NonSteam}
+STATE=${XDG_STATE_HOME:-$HOME/.local/state}/nas-games
+LOG=$STATE/fan-fetch.log
+mkdir -p "$STATE"
+
+log()    { echo "$(date '+%F %T') [${rel:-}] $*" >> "$LOG"; }
+notify() { command -v notify-send > /dev/null && notify-send -a "NAS games" "$1" "${2:-}" 2> /dev/null; true; }
+die()    { echo "fan-fetch: $*" >&2; exit 1; }
+
+command -v rsync > /dev/null || { notify "rsync is missing" "Install it: sudo pacman -S rsync"; echo "fan-fetch: install rsync first" >&2; exit 1; }
+
+nas_online() { [[ -d $SRC_ROOT ]] && [[ -n $(ls -A "$SRC_ROOT" 2> /dev/null) ]]; }
+
+# Where the game lives on the NAS. A game is a folder, or (rarely) a single loose program file.
+resolve() {
+    rel=$1
+    name=$(basename "$rel")
+    src=$SRC_ROOT/$rel
+    dst=$LOCAL_ROOT/$rel
+    saves=$SAVE_ROOT/$rel
+}
+
+download() {
+    mkdir -p "$dst"
+    if [[ -f $src ]]; then
+        rsync -rtl "$src" "$dst/"
+    else
+        rsync -rtl "$src/" "$dst/"
+    fi
+}
+
+compare_dir() {   # the NAS original to compare against, to find changed files
+    if [[ -f $src ]]; then dirname "$src"; else echo "$src"; fi
+}
+
+backup_saves() {   # needs the NAS; never deletes anything on the NAS
+    local pfx_user=$1 ok=0
+    nas_online || { log "NAS offline: saves not backed up"; notify "$name: saves not backed up" "The NAS isn't reachable. They'll be copied next time you play while it's on."; return 1; }
+    mkdir -p "$saves/game" || return 1
+    rsync -rtlm --compare-dest="$(compare_dir)/" \
+        --exclude=/.nas-complete --exclude=/.nas-prefix \
+        "$dst/" "$saves/game/" || ok=1
+    if [[ -n $pfx_user && -d $pfx_user ]]; then
+        mkdir -p "$saves/prefix"
+        rsync -rtlm --exclude='Temp/' --exclude='AppData/Local/Temp/' \
+            "$pfx_user/" "$saves/prefix/" || ok=1
+    fi
+    (( ok == 0 )) && log "saves backed up" || log "save backup had errors"
+    return $ok
+}
+
+# ---------- terminal commands ----------
+
+if [[ ${1:-} == --list ]]; then
+    find "$LOCAL_ROOT" -name .nas-complete -printf '%h\n' 2> /dev/null \
+        | sed "s|^$LOCAL_ROOT/||" | sort
+    exit 0
+fi
+
+if [[ ${1:-} == --remove ]]; then
+    [[ -n ${2:-} ]] || die "usage: fan-fetch --remove <name>"
+    mapfile -t hits < <("$0" --list | grep -iF -- "$2")
+    for h in "${hits[@]}"; do [[ $h == "$2" ]] && hits=("$h") && break; done   # exact name wins
+    case ${#hits[@]} in
+        0) die "no downloaded game matches '$2' (see: fan-fetch --list)" ;;
+        1) ;;
+        *) printf '  %s\n' "${hits[@]}" >&2; die "several games match '$2'; be more specific" ;;
+    esac
+    resolve "${hits[0]}"
+    pgrep -f -- "$dst" > /dev/null && die "$name seems to be running; quit it first"
+    pfx_user=""
+    [[ -f $dst/.nas-prefix ]] && pfx_user=$(< "$dst/.nas-prefix")/pfx/drive_c/users/steamuser
+    backup_saves "$pfx_user" || die "saves could not be backed up, so $name was NOT removed"
+    rm -rf -- "$dst"
+    log "removed local copy"
+    echo "Removed $name from this PC. Saves are on the NAS; it downloads again when you press Play."
+    exit 0
+fi
+
+# ---------- launched by Steam ----------
+
+[[ $# -ge 2 ]] || die "usage: fan-fetch <game path> %command%   (set as Steam launch options)"
+resolve "$1"
+shift
+
+if [[ ! -f $dst/.nas-complete ]]; then
+    if ! nas_online || [[ ! -e $src ]]; then
+        log "cannot download: NAS offline or game missing ($src)"
+        notify "Can't start $name" "It isn't on this PC yet and the NAS isn't reachable."
+        exit 1
+    fi
+    log "downloading from $src"
+    notify "Downloading $name" "Copying from the NAS. The game starts when it's done."
+    if ! download; then
+        log "download failed"
+        notify "Download of $name failed" "Press Play again to retry."
+        exit 1
+    fi
+    [[ -d $saves/game ]] && rsync -rtl "$saves/game/" "$dst/" && log "game-folder saves restored"
+    touch "$dst/.nas-complete"
+    log "download complete"
+fi
+
+pfx_user=""
+restore_prefix_after=0
+if [[ -n ${STEAM_COMPAT_DATA_PATH:-} ]]; then
+    echo "$STEAM_COMPAT_DATA_PATH" > "$dst/.nas-prefix"
+    pfx_user=$STEAM_COMPAT_DATA_PATH/pfx/drive_c/users/steamuser
+    if [[ -d $saves/prefix && ! -f $STEAM_COMPAT_DATA_PATH/.nas-restored ]]; then
+        if [[ -d $pfx_user ]]; then
+            rsync -rtl "$saves/prefix/" "$pfx_user/" && touch "$STEAM_COMPAT_DATA_PATH/.nas-restored"
+            log "prefix saves restored"
+        else
+            restore_prefix_after=1   # Proton creates the prefix on this first start
+        fi
+    fi
+fi
+
+log "starting"
+"$@"
+rc=$?
+log "game exited ($rc)"
+
+if (( restore_prefix_after )) && [[ -d $pfx_user ]]; then
+    # First start on this PC: put the NAS saves into the new prefix instead of backing up its empty ones
+    rsync -rtl "$saves/prefix/" "$pfx_user/" && touch "$STEAM_COMPAT_DATA_PATH/.nas-restored"
+    log "prefix saves restored after first start"
+    notify "$name: saves restored" "Your earlier saves are back from the next time you play."
+    rsync -rtlm --compare-dest="$(compare_dir)/" --exclude=/.nas-complete --exclude=/.nas-prefix \
+        "$dst/" "$saves/game/" 2> /dev/null
+else
+    backup_saves "$pfx_user"
+fi
+
+exit $rc

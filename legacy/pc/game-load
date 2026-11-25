@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# game-load - copy a game from the NAS archive into your local Steam library.
+#
+#   game-load --list           list the games in the archive
+#   game-load <appid|name>     install that game locally (Steam must be closed)
+#
+# When you are done with a game, uninstall it in Steam as usual.
+# That only deletes the local copy; the NAS archive is untouched.
+#
+# Settings (override per run, or export them in ~/.bashrc / ~/.zshrc):
+#   NAS=/mnt/nas-games/steam            where the archive share is mounted
+#   LIB=~/.local/share/Steam            the Steam library to install into
+#                                       (e.g. LIB=/mnt/SteamGames/SteamLibrary)
+
+set -euo pipefail
+NAS=${NAS:-/mnt/nas-games/steam}
+LIB=${LIB:-$HOME/.local/share/Steam}
+
+die() { echo "game-load: $*" >&2; exit 1; }
+
+# Value of a top-level key in an .acf manifest, e.g.  "installdir"  "Some Game"
+acf_field() {
+    sed -n "s/^[[:space:]]*\"$2\"[[:space:]]*\"\(.*\)\"[[:space:]]*$/\1/p" "$1" | head -n 1
+}
+
+list() {
+    local m
+    for m in "$NAS"/*/steamapps/appmanifest_*.acf; do
+        [[ -f $m ]] || continue
+        printf '%-10s %s\n' "$(acf_field "$m" appid)" "$(acf_field "$m" name)"
+    done | sort -f -k2
+}
+
+[[ $# -eq 1 ]] || die "usage: game-load --list | game-load <appid|name>"
+[[ -d $NAS ]] || die "archive not found at $NAS (is the NAS share mounted?)"
+
+if [[ $1 == --list ]]; then
+    list
+    exit 0
+fi
+
+if [[ $1 =~ ^[0-9]+$ ]]; then
+    appid=$1
+else
+    mapfile -t hits < <(list | grep -iF -- "$1" || true)
+    case ${#hits[@]} in
+        0) die "no archived game matches '$1' (try: game-load --list)" ;;
+        1) appid=${hits[0]%% *} ;;
+        *) printf '%s\n' "${hits[@]}" >&2
+           die "several games match '$1'; use the appid" ;;
+    esac
+fi
+
+src=$NAS/$appid
+acf=$src/steamapps/appmanifest_$appid.acf
+[[ -f $acf ]] || die "$appid is not in the archive (no manifest at $acf)"
+name=$(acf_field "$acf" name)
+dir=$(acf_field "$acf" installdir)
+[[ -n $dir ]] || die "manifest for $appid has no installdir"
+
+[[ -d $LIB/steamapps ]] || die "Steam library not found at $LIB/steamapps (set LIB=...)"
+[[ -f $LIB/steamapps/appmanifest_$appid.acf ]] \
+    && die "$name is already installed in $LIB; Steam keeps it updated"
+pgrep -x steam > /dev/null \
+    && die "close Steam first (it only notices new games when it starts)"
+
+need=$(du -sb --exclude=steamapps "$src" | cut -f1)
+avail=$(df -PB1 "$LIB/steamapps" | awk 'NR==2 {print $4}')
+(( need < avail )) || die "not enough space: $name needs $((need / 1024**3)) GB, $((avail / 1024**3)) GB free"
+
+dest=$LIB/steamapps/common/$dir
+echo "Copying $name ($appid, $((need / 1024**3)) GB) from the NAS to $dest"
+mkdir -p "$dest"
+if command -v rsync > /dev/null; then
+    rsync -a --info=progress2 --exclude=/steamapps/ "$src/" "$dest/"
+else
+    echo "(rsync not installed: copying without a progress bar; 'sudo pacman -S rsync' adds one)"
+    cp -a "$src/." "$dest/"
+    rm -rf "$dest/steamapps"
+fi
+cp "$acf" "$LIB/steamapps/appmanifest_$appid.acf"
+
+echo "Done. Start Steam: $name shows as installed (and updates itself if Steam is online)."

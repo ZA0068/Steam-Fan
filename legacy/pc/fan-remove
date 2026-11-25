@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# fan-remove <name> - back up a fan game's saves to the NAS, then delete it from this PC.
+# It stays in Steam and downloads again the next time you press Play.
+exec "$(dirname "$(readlink -f "$0")")/fan-fetch" --remove "$@"

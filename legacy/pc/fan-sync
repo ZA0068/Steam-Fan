@@ -1,0 +1,581 @@
+#!/usr/bin/env python3
+"""fan-sync - list every fan game on the NAS in your Steam library.
+
+Each game becomes a non-Steam entry that runs through fan-fetch, so pressing Play
+downloads it from the NAS the first time. Windows games are set to run through Proton,
+Linux games run natively.
+
+    fan-sync --dry-run                   show what would change; writes nothing
+    fan-sync --only "Super Mario 63"     add/update only games whose path contains this text
+    fan-sync                             add/update all games
+    fan-sync --rescan                    pick each game's program again (after you fix a game folder)
+
+Steam must be closed. Your Steam files are backed up first (*.bak-<date>).
+Only entries made by fan-sync are changed or removed; your own non-Steam games are left alone.
+
+Settings (environment):
+    NAS_GAMES=/mnt/nas-games    FAN_LOCAL=~/Games/NonSteam    STEAM_ROOT=~/.local/share/Steam
+    PROTON=<tool name>   default: the Proton version your Steam uses for all games, else proton_experimental
+"""
+
+import argparse, binascii, json, os, re, shutil, struct, subprocess, sys, time
+
+HOME = os.path.expanduser("~")
+NAS = os.environ.get("NAS_GAMES", "/mnt/nas-games")
+SRC_ROOT = os.path.join(NAS, "fangames")
+LOCAL_ROOT = os.environ.get("FAN_LOCAL", os.path.join(HOME, "Games/NonSteam"))
+STEAM_ROOT = os.environ.get("STEAM_ROOT", os.path.join(HOME, ".local/share/Steam"))
+FETCH = os.path.join(HOME, ".local/bin/fan-fetch")
+CACHE = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.join(HOME, ".cache")), "nas-games/fan-sync.json")
+MARK = "fan-fetch"
+
+IGNORE = re.compile(
+    r"^(unins\d*|unitycrashhandler(32|64)?|crashpad_handler|crashreport.*|dxsetup|dxwebsetup|vc_?redist.*|"
+    r"vcredist.*|dotnetfx.*|ndp\d.*|oalinst|physx.*|notification_helper|ue4prereqsetup.*|"
+    r"uecrashreporter.*|7za?)\.exe$", re.I)
+BAD_WORDS = re.compile(r"launcher|config|setting|setup|install|editor|server|dedicated|crash|update|patch|tool|debug", re.I)
+WIN_EXT = (".exe",)
+LIN_EXT = (".x86_64", ".appimage")
+
+
+# ---------------- binary VDF (shortcuts.vdf) ----------------
+
+def bvdf_load(data):
+    pos = 0
+
+    def cstr():
+        nonlocal pos
+        end = data.index(b"\0", pos)
+        s = data[pos:end].decode("utf-8", "replace")
+        pos = end + 1
+        return s
+
+    def read_map():
+        nonlocal pos
+        out = {}
+        while True:
+            t = data[pos]; pos += 1
+            if t == 0x08:
+                return out
+            key = cstr()
+            if t == 0x00:
+                out[key] = read_map()
+            elif t == 0x01:
+                out[key] = cstr()
+            elif t == 0x02:
+                out[key] = ("i32", struct.unpack_from("<i", data, pos)[0]); pos += 4
+            elif t == 0x03:
+                out[key] = ("f32", struct.unpack_from("<f", data, pos)[0]); pos += 4
+            elif t == 0x07:
+                out[key] = ("u64", struct.unpack_from("<Q", data, pos)[0]); pos += 8
+            else:
+                raise ValueError(f"unknown VDF type {t:#x} at {pos}")
+
+    return read_map()
+
+
+def bvdf_dump(obj):
+    out = bytearray()
+
+    def w(m):
+        for k, v in m.items():
+            kb = k.encode("utf-8") + b"\0"
+            if isinstance(v, dict):
+                out.extend(b"\x00" + kb); w(v); out.append(0x08)
+            elif isinstance(v, str):
+                out.extend(b"\x01" + kb + v.encode("utf-8") + b"\0")
+            elif isinstance(v, tuple):
+                kind, val = v
+                if kind == "i32":
+                    out.extend(b"\x02" + kb + struct.pack("<i", val))
+                elif kind == "f32":
+                    out.extend(b"\x03" + kb + struct.pack("<f", val))
+                else:
+                    out.extend(b"\x07" + kb + struct.pack("<Q", val))
+            else:
+                raise TypeError(f"cannot store {k}={v!r}")
+
+    w(obj)
+    out.append(0x08)
+    return bytes(out)
+
+
+# ---------------- text VDF (config.vdf) ----------------
+# Stored as lists of [key, value] so order and duplicate keys survive a round trip.
+
+def tvdf_load(text):
+    toks, i, n = [], 0, len(text)
+    while i < n:
+        c = text[i]
+        if c.isspace():
+            i += 1
+        elif text.startswith("//", i):
+            i = text.find("\n", i); i = n if i < 0 else i
+        elif c in "{}":
+            toks.append(c); i += 1
+        elif c == '"':
+            j, buf = i + 1, []
+            while j < n and text[j] != '"':
+                if text[j] == "\\" and j + 1 < n:
+                    buf.append({"n": "\n", "t": "\t", "\\": "\\", '"': '"'}.get(text[j + 1], text[j + 1])); j += 2
+                else:
+                    buf.append(text[j]); j += 1
+            toks.append(("s", "".join(buf))); i = j + 1
+        else:
+            j = i
+            while j < n and not text[j].isspace() and text[j] not in '{}"':
+                j += 1
+            toks.append(("s", text[i:j])); i = j
+    pos = 0
+
+    def block():
+        nonlocal pos
+        items = []
+        while pos < len(toks):
+            t = toks[pos]
+            if t == "}":
+                pos += 1
+                return items
+            key = t[1]; pos += 1
+            nxt = toks[pos]
+            if nxt == "{":
+                pos += 1
+                items.append([key, block()])
+            else:
+                items.append([key, nxt[1]]); pos += 1
+                if pos < len(toks) and isinstance(toks[pos], tuple) and toks[pos][1].startswith("["):
+                    pos += 1   # conditional like [$WIN32]: dropped
+        return items
+
+    return block()
+
+
+def tvdf_dump(items, depth=0):
+    esc = lambda s: s.replace("\\", "\\\\").replace('"', '\\"')
+    tab = "\t" * depth
+    out = []
+    for k, v in items:
+        if isinstance(v, list):
+            out.append(f'{tab}"{esc(k)}"\n{tab}{{\n{tvdf_dump(v, depth + 1)}{tab}}}\n')
+        else:
+            out.append(f'{tab}"{esc(k)}"\t\t"{esc(v)}"\n')
+    return "".join(out)
+
+
+def tget(items, key, create=False):
+    for k, v in items:
+        if k.lower() == key.lower() and isinstance(v, list):
+            return v
+    if create:
+        new = []
+        items.append([key, new])
+        return new
+    return None
+
+
+# ---------------- finding games on the NAS ----------------
+
+def exe_list(path):
+    out = []
+    for root, dirs, files in os.walk(path):
+        for f in files:
+            low = f.lower()
+            if low.endswith(WIN_EXT) and not IGNORE.match(f):
+                out.append(os.path.join(root, f))
+            elif low.endswith(LIN_EXT):
+                out.append(os.path.join(root, f))
+    return out
+
+
+SKIP = {"@eaDir", "#recycle", "#snapshot"}
+BUILD_DIRS = {"bin", "bin32", "bin64", "x86", "x64", "win32", "win64", "windows", "linux",
+              "binaries", "game", "data", "release", "build"}
+LAYOUT = os.path.join(os.path.dirname(CACHE), "fan-sync-layout.json")
+
+
+def is_program(name):
+    low = name.lower()
+    return (low.endswith(WIN_EXT) and not IGNORE.match(name)) or low.endswith(LIN_EXT)
+
+
+def listing(path):
+    """[(name, is_dir, is_file)] from one directory read. scandir knows the type of each
+    entry without asking the NAS again per file, which is what makes this fast over SMB."""
+    with os.scandir(path) as it:
+        return sorted((e.name, e.is_dir(), e.is_file()) for e in it
+                      if not e.name.startswith(".") and e.name not in SKIP)
+
+
+def has_top_program(path):
+    try:
+        return any(f and is_program(n) for n, d, f in listing(path))
+    except OSError:
+        return False
+
+
+def is_game_folder(path, items):
+    """A game: a program sits directly inside, or no subfolder looks like a game of its own
+    (the program is deeper, e.g. Game/bin/game.exe). Otherwise it is a group of games."""
+    if any(f and is_program(n) for n, d, f in items):
+        return True
+    with_prog = [n for n, d, f in items if d and has_top_program(os.path.join(path, n))]
+    if all(n.lower() in BUILD_DIRS for n in with_prog):
+        return True
+    return len(with_prog) < 2
+
+
+def mtime(path):
+    return os.stat(path).st_mtime_ns
+
+
+def read_group(coll):
+    """Games in one top folder (Sonic, Kirby, ...) plus the folder dates used to notice changes."""
+    cpath = os.path.join(SRC_ROOT, coll)
+    games, cats = [], {}
+    for entry, d, f in listing(cpath):
+        epath = os.path.join(cpath, entry)
+        if f:
+            if is_program(entry):
+                games.append((f"{coll}/{entry}", coll))
+            continue
+        if not d:
+            continue
+        items = listing(epath)
+        if is_game_folder(epath, items):
+            games.append((f"{coll}/{entry}", coll))
+        else:
+            cats[entry] = mtime(epath)
+            for g, gd, gf in items:
+                if gd or is_program(g):
+                    games.append((f"{coll}/{entry}/{g}", entry))
+    return {"mtime": mtime(cpath), "cats": cats, "games": games}
+
+
+def unchanged(coll, old):
+    try:
+        cpath = os.path.join(SRC_ROOT, coll)
+        if mtime(cpath) != old["mtime"]:
+            return False
+        return all(mtime(os.path.join(cpath, c)) == t for c, t in old["cats"].items())
+    except (OSError, KeyError, TypeError):
+        return False
+
+
+def find_games(rescan=False):
+    """<group>/<game> or <group>/<subgroup>/<game>. Folders that have not changed since the
+    last run are taken from a saved list, so only new or changed groups are read again.
+    Returns (games, complete); complete is False if some folder could not be read."""
+    try:
+        old = {} if rescan else json.load(open(LAYOUT))
+    except (OSError, ValueError):
+        old = {}
+    new, games, complete = {}, [], True
+    for coll, d, f in listing(SRC_ROOT):
+        if not d:
+            continue
+        if coll in old and unchanged(coll, old[coll]):
+            new[coll] = old[coll]
+        else:
+            print(f"  reading {coll} ...", file=sys.stderr, flush=True)
+            try:
+                new[coll] = read_group(coll)
+            except OSError as e:
+                print(f"  ! could not read {coll}: {e}", file=sys.stderr)
+                complete = False
+                if coll in old:
+                    new[coll] = old[coll]
+                else:
+                    continue
+        games += [tuple(g) for g in new[coll]["games"]]
+    try:
+        os.makedirs(os.path.dirname(LAYOUT), exist_ok=True)
+        json.dump(new, open(LAYOUT, "w"), indent=1)
+    except OSError:
+        pass
+    return games, complete
+
+
+def norm(s):
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
+def pick_program(rel):
+    """Choose the program that starts the game. Returns (relative path inside the game, platform) or None."""
+    src = os.path.join(SRC_ROOT, rel)
+    if os.path.isfile(src):
+        low = src.lower()
+        if low.endswith(WIN_EXT):
+            return os.path.basename(src), "windows"
+        if low.endswith(LIN_EXT):
+            return os.path.basename(src), "linux"
+        return None
+    cands = exe_list(src)
+    if not cands:
+        return None
+    linux = [c for c in cands if c.lower().endswith(LIN_EXT)]
+    pool = linux or cands          # prefer a native Linux build when the game has one
+    gname = norm(os.path.basename(rel))
+
+    def score(p):
+        relp = os.path.relpath(p, src)
+        depth = relp.count(os.sep)
+        stem = norm(os.path.splitext(os.path.basename(p))[0])
+        s = 100 - 15 * depth
+        if stem and gname and (stem in gname or gname in stem):
+            s += 50
+        if BAD_WORDS.search(os.path.basename(p)):
+            s -= 80
+        try:
+            s += min(os.path.getsize(p) / 1e6, 50) / 5
+        except OSError:
+            pass
+        return s
+
+    best = max(pool, key=score)
+    return os.path.relpath(best, src), ("linux" if best in linux else "windows")
+
+
+# ---------------- Steam ----------------
+
+ICON_DIR = os.path.join(os.path.dirname(CACHE), "icons")
+_icon_hint = [False]
+
+
+def make_icon(src_exe, key):
+    """Take the icon out of a Windows .exe on the NAS and save it as a PNG for Steam.
+    Steam on Linux can't read icons from .exe files itself. Needs icoutils."""
+    out = os.path.join(ICON_DIR, key + ".png")
+    if os.path.exists(out):
+        return out
+    if not (shutil.which("wrestool") and shutil.which("icotool")):
+        if not _icon_hint[0]:
+            print("  (no icons: install icoutils, e.g. sudo pacman -S icoutils, then run fan-sync again)")
+            _icon_hint[0] = True
+        return ""
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        ico = os.path.join(tmp, "x.ico")
+        with open(ico, "wb") as f:
+            subprocess.run(["wrestool", "-x", "-t", "14", src_exe], stdout=f, stderr=subprocess.DEVNULL)
+        if os.path.getsize(ico) == 0:
+            return ""
+        subprocess.run(["icotool", "-x", "-o", tmp, ico], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        pngs = [os.path.join(tmp, f) for f in os.listdir(tmp) if f.endswith(".png")]
+        if not pngs:
+            return ""
+        def size(pth):   # icotool names files x_<n>_<w>x<h>x<bits>.png
+            m = re.search(r"_(\d+)x(\d+)x(\d+)\.png$", pth)
+            return (int(m.group(1)), int(m.group(3))) if m else (0, 0)
+        best = max(pngs, key=size)
+        os.makedirs(ICON_DIR, exist_ok=True)
+        shutil.copyfile(best, out)
+    return out
+
+
+def find_icon(rel, inner, platform, key):
+    src = os.path.join(SRC_ROOT, rel)
+    game_dir = src if os.path.isdir(src) else os.path.dirname(src)
+    if platform == "windows":
+        exe = os.path.join(src, inner) if os.path.isdir(src) else src
+        try:
+            got = make_icon(exe, key)
+        except OSError:
+            got = ""
+        if got:
+            return got
+    try:   # a picture shipped with the game (icon.png, <game>.png ...)
+        pics = [n for n, d, f in listing(game_dir) if f and n.lower().endswith((".png", ".ico"))]
+    except OSError:
+        pics = []
+    pics.sort(key=lambda n: ("icon" not in n.lower(), len(n)))
+    if pics:
+        os.makedirs(ICON_DIR, exist_ok=True)
+        out = os.path.join(ICON_DIR, key + os.path.splitext(pics[0])[1].lower())
+        try:
+            shutil.copyfile(os.path.join(game_dir, pics[0]), out)
+            return out
+        except OSError:
+            pass
+    return ""
+
+
+def steam_running():
+    for name in ("steam", "steamwebhelper"):
+        if subprocess.run(["pgrep", "-x", name], capture_output=True).returncode == 0:
+            return True
+    return False
+
+
+def user_config_dir():
+    ud = os.path.join(STEAM_ROOT, "userdata")
+    ids = [d for d in os.listdir(ud) if d.isdigit() and d != "0"] if os.path.isdir(ud) else []
+    if not ids:
+        sys.exit(f"No Steam user found in {ud}. Start Steam once and log in, then close it.")
+    best = max(ids, key=lambda d: os.path.getmtime(os.path.join(ud, d)))
+    path = os.path.join(ud, best, "config")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def shortcut_appid(exe, name):
+    return (binascii.crc32((exe + name).encode("utf-8")) & 0xFFFFFFFF) | 0x80000000
+
+
+def signed(u):
+    return u - (1 << 32) if u >= (1 << 31) else u
+
+
+def rel_from_launch(opts):
+    m = re.search(r'fan-fetch"?\s+"((?:[^"\\]|\\.)*)"', opts)
+    return m.group(1).replace('\\"', '"') if m else None
+
+
+def backup(path, stamp):
+    if not os.path.exists(path):
+        return
+    if not os.path.exists(f"{path}.bak-original"):      # the state before fan-sync ever ran
+        shutil.copy2(path, f"{path}.bak-original")
+    dest, n = f"{path}.bak-{stamp}", 2
+    while os.path.exists(dest):
+        dest, n = f"{path}.bak-{stamp}-{n}", n + 1
+    shutil.copy2(path, dest)
+
+
+# ---------------- main ----------------
+
+def main():
+    ap = argparse.ArgumentParser(description="Add NAS fan games to Steam as non-Steam entries.")
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--only", action="append", default=[], help="only games whose path contains this text")
+    ap.add_argument("--rescan", action="store_true", help="choose each game's program again")
+    a = ap.parse_args()
+
+    if not os.path.isdir(SRC_ROOT):
+        sys.exit(f"{SRC_ROOT} not found. Is the NAS share mounted?")
+    if not a.dry_run and steam_running():
+        sys.exit("Close Steam first (Steam > Exit), then run fan-sync again.")
+    if not a.dry_run and not os.access(FETCH, os.X_OK):
+        sys.exit(f"{FETCH} not found. Install fan-fetch there first.")
+
+    try:
+        games, complete = find_games(a.rescan)
+    except OSError as e:
+        sys.exit(f"Could not read {SRC_ROOT}: {e}")
+    if a.only:
+        games = [g for g in games if any(o.lower() in g[0].lower() for o in a.only)]
+    print(f"{len(games)} games on the NAS" + (f" matching {a.only}" if a.only else ""))
+
+    try:
+        cache = json.load(open(CACHE))
+    except (OSError, ValueError):
+        cache = {}
+
+    cfgdir = user_config_dir()
+    sc_path = os.path.join(cfgdir, "shortcuts.vdf")
+    cv_path = os.path.join(STEAM_ROOT, "config", "config.vdf")
+    shortcuts = bvdf_load(open(sc_path, "rb").read()) if os.path.exists(sc_path) else {"shortcuts": {}}
+    entries = list(shortcuts.get("shortcuts", {}).values())
+    config = tvdf_load(open(cv_path, encoding="utf-8").read()) if os.path.exists(cv_path) else [["InstallConfigStore", []]]
+
+    steam_node = tget(tget(tget(tget(config, "InstallConfigStore", True), "Software", True), "Valve", True), "Steam", True)
+    compat = tget(steam_node, "CompatToolMapping", True)
+    default_tool = os.environ.get("PROTON")
+    if not default_tool:
+        glob = tget(compat, "0")
+        default_tool = next((v for k, v in (glob or []) if k == "name" and v), "proton_experimental")
+
+    ours = {}
+    for e in entries:
+        r = rel_from_launch(e.get("LaunchOptions", "")) if MARK in e.get("LaunchOptions", "") else None
+        if r:
+            ours[r] = e
+
+    added = updated = skipped = 0
+    wanted = set()
+    for rel, category in games:
+        wanted.add(rel)
+        if rel in cache and not a.rescan:
+            prog = tuple(cache[rel]) if cache[rel] else None
+        else:
+            print(f"  looking for the program in {rel} ...", file=sys.stderr, flush=True)
+            prog = pick_program(rel)
+            cache[rel] = list(prog) if prog else None
+        if not prog:
+            print(f"  ! no program found, skipped: {rel}")
+            skipped += 1
+            continue
+        inner, platform = prog
+        name = os.path.splitext(os.path.basename(rel))[0] if os.path.isfile(os.path.join(SRC_ROOT, rel)) else os.path.basename(rel)
+        local_dir = os.path.join(LOCAL_ROOT, rel) if not os.path.isfile(os.path.join(SRC_ROOT, rel)) \
+            else os.path.join(LOCAL_ROOT, rel)
+        exe_path = os.path.join(local_dir, inner)
+        fields = {
+            "AppName": name,
+            "Exe": f'"{exe_path}"',
+            "StartDir": f'"{os.path.dirname(exe_path)}"',
+            "LaunchOptions": f'"{FETCH}" "{rel.replace(chr(34), chr(92) + chr(34))}" %command%',
+        }
+        if rel in ours:
+            e = ours[rel]
+            if any(e.get(k) != v for k, v in fields.items()):
+                e.update(fields)
+                updated += 1
+                print(f"  ~ {rel}  ->  {inner} ({platform})")
+        else:
+            appid = shortcut_appid(fields["Exe"], name)
+            e = {"appid": ("i32", signed(appid)), **fields, "icon": "", "ShortcutPath": "",
+                 "IsHidden": ("i32", 0), "AllowDesktopConfig": ("i32", 1), "AllowOverlay": ("i32", 1),
+                 "OpenVR": ("i32", 0), "Devkit": ("i32", 0), "DevkitGameID": "",
+                 "DevkitOverrideAppID": ("i32", 0), "LastPlayTime": ("i32", 0), "FlatpakAppID": "",
+                 "tags": {"0": category}}
+            entries.append(e)
+            ours[rel] = e
+            added += 1
+            print(f"  + {rel}  ->  {inner} ({platform})")
+
+        appid_u = e["appid"][1] & 0xFFFFFFFF
+        key = str(appid_u)
+        if not e.get("icon") or not os.path.exists(e["icon"]):
+            icon = "" if a.dry_run else find_icon(rel, inner, platform, key)
+            if icon:
+                e["icon"] = icon
+                print(f"    icon: {os.path.basename(icon)}")
+        compat[:] = [kv for kv in compat if kv[0] != key]
+        if platform == "windows":
+            compat.append([key, [["name", default_tool], ["config", ""], ["priority", "250"]]])
+
+    removed = 0
+    if not a.only and games and complete:   # only prune when the whole NAS list was read
+        for rel, e in list(ours.items()):
+            if rel not in wanted:
+                entries.remove(e)
+                key = str(e["appid"][1] & 0xFFFFFFFF)
+                compat[:] = [kv for kv in compat if kv[0] != key]
+                removed += 1
+                print(f"  - {rel}  (no longer on the NAS)")
+
+    print(f"\n{added} added, {updated} updated, {removed} removed, {skipped} skipped"
+          f" (Windows games use {default_tool})")
+    if a.dry_run:
+        print("Dry run: nothing written.")
+        return
+
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    backup(sc_path, stamp)
+    backup(cv_path, stamp)
+    shortcuts["shortcuts"] = {str(i): e for i, e in enumerate(entries)}
+    with open(sc_path + ".tmp", "wb") as f:
+        f.write(bvdf_dump(shortcuts))
+    os.replace(sc_path + ".tmp", sc_path)
+    os.makedirs(os.path.dirname(cv_path), exist_ok=True)
+    with open(cv_path + ".tmp", "w", encoding="utf-8") as f:
+        f.write(tvdf_dump(config))
+    os.replace(cv_path + ".tmp", cv_path)
+    os.makedirs(os.path.dirname(CACHE), exist_ok=True)
+    json.dump(cache, open(CACHE, "w"), indent=1)
+    print(f"Saved. Backups: *.bak-{stamp} next to {sc_path} and {cv_path}")
+    print("Start Steam: the games are in your library.")
+
+
+if __name__ == "__main__":
+    main()
