@@ -275,13 +275,13 @@ pub fn verify(what: &str) -> i32 {
     }
 }
 
-pub fn redownload(what: &str, version: Option<&str>) -> i32 {
+pub fn redownload(what: &str, version: Option<&str>, file: Option<&str>) -> i32 {
     let Ok((cfg, mut db)) = setup() else { return 2 };
     let g = match find(&db, what) {
         Ok(g) => g,
         Err(e) => return fail(e),
     };
-    match library::redownload(&cfg, &mut db, &g, version, &transfer::Cancel::default(), &mut |s| eprintln!("  {s} ..."), &mut bar) {
+    match library::redownload(&cfg, &mut db, &g, version, file.map(std::path::Path::new), &transfer::Cancel::default(), &mut |s| eprintln!("  {s} ..."), &mut bar) {
         Ok(dst) => {
             eprintln!("\nOn the shelf at {}", dst.display());
             0

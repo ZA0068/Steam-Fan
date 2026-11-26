@@ -207,6 +207,7 @@ steam-fan add <zip|folder|rom> --group "Sonic The Hedgehog" [--kind fan|nonsteam
 steam-fan art [--again]      artwork: copy from the shelf, fetch missing ones, update Steam's
 steam-fan verify "Sonic Robo Blast 2"          check files against their fingerprints, repair the PC copy
 steam-fan redownload "Sonic Robo Blast 2" [--version "v2.2.14"]   get it again from its download link
+steam-fan redownload "Sonic Quantum Collision" --file ~/Downloads/sqc.zip   same, from a file you downloaded
 steam-fan sync [--dry-run] [--only "Mario 63"] [--rescan]
 steam-fan list [--installed]
 steam-fan install "Super Mario 63"

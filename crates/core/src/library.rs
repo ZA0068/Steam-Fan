@@ -480,6 +480,8 @@ pub fn redownload(
     db: &mut Db,
     g: &Game,
     as_version: Option<&str>,
+    // a file you downloaded yourself (when the link needs a browser): used instead of the link
+    file: Option<&Path>,
     cancel: &Cancel,
     status: &mut dyn FnMut(&str),
     cb: &mut dyn FnMut(&Progress),
@@ -494,11 +496,22 @@ pub fn redownload(
     }
     let mut info = artwork::info(g);
     let url = info.download.trim().to_string();
-    if url.is_empty() {
-        bail!("no download link: add it under About > Edit");
-    }
-    status("downloading");
-    let file = source::fetch(&url, cancel, cb)?;
+    let from_link = file.is_none();
+    let file = match file {
+        Some(f) => {
+            if !f.exists() {
+                bail!("{} doesn't exist", f.display());
+            }
+            f.to_path_buf()
+        }
+        None => {
+            if url.is_empty() {
+                bail!("no download link: add it under About > Edit, or use a file you downloaded");
+            }
+            status("downloading");
+            source::fetch(&url, cancel, cb)?
+        }
+    };
     let result = (|| -> Result<PathBuf> {
         if let Some(v) = as_version.filter(|v| !v.trim().is_empty()) {
             let group = match g.kind {
@@ -515,8 +528,10 @@ pub fn redownload(
             if let Some(ng) = db.games()?.into_iter().find(|x| x.shelf_path(cfg) == dst) {
                 let _ = integrity::write(&integrity::manifest_path(cfg, &ng), &m);
                 let mut ni = info.clone();
-                source::save_stamp(cfg, &ng, &mut ni);
-                db.log(&ng.id, "downloaded from its link");
+                if from_link {
+                    source::save_stamp(cfg, &ng, &mut ni);
+                }
+                db.log(&ng.id, if from_link { "downloaded from its link" } else { "added from a downloaded file" });
             }
             return Ok(dst);
         }
@@ -535,8 +550,10 @@ pub fn redownload(
             Ok(m) => {
                 let _ = fs::remove_dir_all(&aside);
                 integrity::write(&integrity::manifest_path(cfg, g), &m)?;
-                source::save_stamp(cfg, g, &mut info);
-                db.log(&g.id, "downloaded again from its link; the shelf copy was replaced");
+                if from_link {
+                    source::save_stamp(cfg, g, &mut info);
+                }
+                db.log(&g.id, if from_link { "downloaded again from its link; the shelf copy was replaced" } else { "the shelf copy was replaced from a downloaded file" });
                 // the program may have a new name
                 let _ = db.set_program(&g.id, "", g.platform);
                 let mut v = vec![g.clone()];
@@ -551,7 +568,9 @@ pub fn redownload(
             }
         }
     })();
-    source::downloads_dir_clean();
+    if from_link {
+        source::downloads_dir_clean();
+    }
     result
 }
 

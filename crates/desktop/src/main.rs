@@ -546,12 +546,13 @@ fn verify(handle: tauri::AppHandle, app: State<'_, App>, id: String) -> Res<u64>
 
 /// Download a game again from its link: replace the shelf copy, or add it as a new version.
 #[tauri::command]
-fn redownload(handle: tauri::AppHandle, app: State<'_, App>, id: String, version: Option<String>) -> Res<u64> {
+fn redownload(handle: tauri::AppHandle, app: State<'_, App>, id: String, version: Option<String>, file: Option<String>) -> Res<u64> {
     let cfg = cfg(&app);
     let g = find(&id)?;
     Ok(app.jobs.spawn(&handle, &format!("Downloading {}", g.full_name()), move |ctx: Ctx| {
         let mut db = Db::open_default()?;
-        let dst = library::redownload(&cfg, &mut db, &g, version.as_deref(), &ctx.cancel, &mut |s| ctx.status(s), &mut |p| ctx.progress(p))?;
+        let file = file.filter(|f| !f.is_empty()).map(PathBuf::from);
+        let dst = library::redownload(&cfg, &mut db, &g, version.as_deref(), file.as_deref(), &ctx.cancel, &mut |s| ctx.status(s), &mut |p| ctx.progress(p))?;
         Ok(format!("Downloaded and put on the shelf at {}", dst.display()))
     }))
 }

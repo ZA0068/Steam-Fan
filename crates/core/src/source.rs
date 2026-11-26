@@ -49,15 +49,9 @@ pub fn host_of(url: &str) -> Host {
         let u = url.replace("dl=0", "dl=1");
         return Host::Direct(if u.contains("dl=1") { u } else if u.contains('?') { format!("{u}&dl=1") } else { format!("{u}?dl=1") });
     }
-    if has("mediafire.com") {
-        return Host::Manual("MediaFire");
-    }
-    if has("sonicfangameshq.com") || has("gamebanana.com") {
-        return Host::Manual("a forum page");
-    }
-    if (has("gamejolt.com") || has("itch.io")) && !low.contains("/download") && !low.ends_with(".zip") && !low.ends_with(".7z") {
-        return Host::Manual(if has("itch.io") { "an itch.io page" } else { "a GameJolt page" });
-    }
+    // Everything else is tried as a direct download: forum attachment links (SFGHQ's
+    // dl-attach.php), itch.io/GameJolt file links, GitHub releases... If the reply is a web
+    // page instead of a file, the download stops and says so (see `direct`).
     Host::Direct(url.to_string())
 }
 
@@ -84,7 +78,10 @@ fn direct(url: &str, dir: &Path, cancel: &Cancel, cb: &mut dyn FnMut(&Progress))
     let r = agent.get(url).set("User-Agent", UA).call().context("download failed")?;
     let ctype = r.header("Content-Type").unwrap_or("").to_lowercase();
     if ctype.starts_with("text/html") {
-        bail!("the link opens a web page, not a file. Download it in your browser and add it with Add game.");
+        bail!(
+            "the link answered with a web page, not a file (it may need a login, a captcha or a click). \
+             Download it in your browser, then use Re-download > Use a file I downloaded."
+        );
     }
     let total: u64 = r.header("Content-Length").and_then(|v| v.parse().ok()).unwrap_or(0);
     let name = file_name_from(url, r.header("Content-Disposition"));
@@ -140,7 +137,7 @@ pub fn fetch(url: &str, cancel: &Cancel, cb: &mut dyn FnMut(&Progress)) -> Resul
     match host_of(url) {
         Host::Direct(u) => direct(&u, &dir, cancel, cb),
         Host::Mega => mega(url, &dir),
-        Host::Manual(site) => bail!("{site} can't be downloaded automatically. Open the link, download it in your browser, and add it with Add game."),
+        Host::Manual(site) => bail!("{site} can't be downloaded automatically. Download it in your browser, then use Re-download > Use a file I downloaded."),
     }
 }
 
@@ -197,8 +194,9 @@ mod tests {
             Host::Direct("https://drive.usercontent.google.com/download?id=1AbC_d&export=download&confirm=t".into())
         );
         assert_eq!(host_of("https://www.dropbox.com/s/x/game.zip?dl=0"), Host::Direct("https://www.dropbox.com/s/x/game.zip?dl=1".into()));
-        assert_eq!(host_of("https://www.mediafire.com/file/x"), Host::Manual("MediaFire"));
-        assert_eq!(host_of("https://sonicfangameshq.com/forums/showcase/x.742/"), Host::Manual("a forum page"));
+        let sfghq = "https://sonicfangameshq.com/forums/dl-attach.php?uri=attachments/sonic-quantum-collision_sage2020_etherealspeed-zip.8819/";
+        assert_eq!(host_of(sfghq), Host::Direct(sfghq.into()));
+        assert_eq!(host_of("https://drive.google.com/drive/folders/abc"), Host::Manual("Google Drive (folder links)"));
         assert_eq!(host_of("https://github.com/a/b/releases/download/v1/game.zip"), Host::Direct("https://github.com/a/b/releases/download/v1/game.zip".into()));
         assert_eq!(file_name_from("https://x/y/Game%20v2.zip?x=1", None), "Game%20v2.zip");
         assert_eq!(file_name_from("https://x/dl", Some("attachment; filename=\"SRB2.zip\"")), "SRB2.zip");

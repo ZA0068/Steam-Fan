@@ -1,5 +1,5 @@
 <script>
-  import { api, human } from "./api.js";
+  import { api, human, pickFile } from "./api.js";
   import Cover from "./Cover.svelte";
   import ArtPicker from "./ArtPicker.svelte";
   import Gallery from "./Gallery.svelte";
@@ -215,7 +215,7 @@
               <button class="btn small" disabled={busy || !status.shelf_online} onclick={() => run(api.verify(game.id))}>✔ Verify</button>
               <button class="btn small" disabled={!info?.info?.download} title={info?.info?.download ? "" : "Add a download link under About > Edit"}
                 onclick={async () => { updateMsg = "Checking…"; try { updateMsg = await api.checkUpdate(game.id); } catch (e) { updateMsg = String(e); } }}>⟳ Check for update</button>
-              <button class="btn small" disabled={busy || !status.shelf_online || !info?.info?.download} onclick={() => (redl = { version: "" })}>⬇ Re-download…</button>
+              <button class="btn small" disabled={busy || !status.shelf_online} onclick={() => (redl = { version: "", file: null })}>⬇ Re-download…</button>
             </div>
             {#if updateMsg}<p class="small note">{updateMsg}</p>{/if}
           </div>
@@ -261,17 +261,22 @@
     <div class="modal small">
       <header><h2>Download {game.name} again</h2></header>
       <div class="body">
-        <p class="muted mono">{info?.info?.download}</p>
+        <div class="redl-src">
+          <label class="radio"><input type="radio" name="src" checked={!redl.file} disabled={!info?.info?.download} onchange={() => (redl.file = null)} /> <span><b>From its link</b><br /><span class="faint mono">{info?.info?.download || "no link yet: add it under About > Edit"}</span></span></label>
+          <label class="radio"><input type="radio" name="src" checked={!!redl.file} onchange={async () => { const f = await pickFile({ archives: true }); redl.file = f; }} /> <span><b>Use a file I downloaded…</b><br /><span class="faint mono">{redl.file || "zip, 7z, rar… when the link needs a browser"}</span></span></label>
+          {#if redl.file}<button class="btn small" onclick={async () => { const f = await pickFile({ archives: true }); if (f) redl.file = f; }}>Choose another file</button>{/if}
+        </div>
+        <hr />
         <label class="radio"><input type="radio" name="how" checked={!redl.asVersion} onchange={() => (redl.asVersion = false)} /> <span><b>Replace the shelf copy</b><br /><span class="faint">For a damaged copy. The old one is kept until the new one is in place; saves stay. The copy on this PC is removed (saves backed up first) and copied fresh on the next Play.</span></span></label>
         <label class="radio"><input type="radio" name="how" checked={redl.asVersion} onchange={() => (redl.asVersion = true)} /> <span><b>Add as a new version</b><br /><span class="faint">For an update: keeps this one, adds the download beside it.</span></span></label>
         {#if redl.asVersion}
           <label class="field"><span>Version name</span><input class="input" bind:value={redl.version} placeholder="e.g. V 0.8" /></label>
         {/if}
-        <p class="faint small">MEGA links need megatools (sudo pacman -S megatools). Links that open a web page (MediaFire, forum pages) must be downloaded in the browser and added with Add game.</p>
+        <p class="faint small">Direct links (forum attachments, GitHub, itch.io files), Google Drive files and Dropbox download by themselves; MEGA needs megatools (sudo pacman -S megatools). If a link answers with a web page instead of a file, download it in your browser and pick it above. The file is checked and checksummed the same way.</p>
       </div>
       <footer>
         <button class="btn" onclick={() => (redl = null)}>Cancel</button>
-        <button class="btn primary" disabled={redl.asVersion && !redl.version.trim()} onclick={() => { run(api.redownload(game.id, redl.asVersion ? redl.version.trim() : null)); redl = null; }}>Download</button>
+        <button class="btn primary" disabled={(redl.asVersion && !redl.version.trim()) || (!redl.file && !info?.info?.download)} onclick={() => { run(api.redownload(game.id, redl.asVersion ? redl.version.trim() : null, redl.file)); redl = null; }}>{redl.file ? "Use this file" : "Download"}</button>
       </footer>
     </div>
   </div>
@@ -294,6 +299,9 @@
 {/if}
 
 <style>
+  .redl-src { display: grid; gap: 6px; }
+  .redl-src .mono { word-break: break-all; }
+
   .page { height: 100vh; overflow-y: auto; overflow-x: hidden; }
   .hero { overflow: hidden; }
   .hero { position: relative; min-height: 380px; display: flex; align-items: flex-end; }

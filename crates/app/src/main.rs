@@ -71,6 +71,9 @@ enum Cmd {
         game: String,
         #[arg(long)]
         version: Option<String>,
+        /// Use this downloaded file (zip, 7z, rar, folder) instead of the link
+        #[arg(long)]
+        file: Option<String>,
     },
     /// List the games (from the last shelf read).
     List {
@@ -110,7 +113,7 @@ fn main() {
         Some(Cmd::Add { source, kind, group, name, version }) => cli::add(&source, &kind, &group, name.as_deref(), &version),
         Some(Cmd::Art { again }) => cli::art(again),
         Some(Cmd::Verify { game }) => cli::verify(&game),
-        Some(Cmd::Redownload { game, version }) => cli::redownload(&game, version.as_deref()),
+        Some(Cmd::Redownload { game, version, file }) => cli::redownload(&game, version.as_deref(), file.as_deref()),
         Some(Cmd::Install { game }) => cli::install(&game),
         Some(Cmd::Remove { game }) => cli::remove(&game),
         Some(Cmd::Archive { cmd }) => match cmd {

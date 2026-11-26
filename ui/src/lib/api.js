@@ -36,7 +36,7 @@ export const api = {
   relocate: (id, kind, group, name, version = "") => call("relocate", { id, kind, group, name, version }),
   syncSteamRestart: () => call("sync_steam_restart"),
   verify: (id) => call("verify", { id }),
-  redownload: (id, version = null) => call("redownload", { id, version }),
+  redownload: (id, version = null, file = null) => call("redownload", { id, version, file }),
   checkUpdate: (id) => call("check_update", { id }),
   pageImages: (url) => call("page_images", { url }),
   screenshotsAddUrls: (id, urls) => call("screenshots_add_urls", { id, urls }),
