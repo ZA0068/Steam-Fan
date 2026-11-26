@@ -1,6 +1,22 @@
 <script>
   import { api, pickFile } from "./api.js";
-  let { game, shots, online, onchanged } = $props();
+  import PagePictures from "./PagePictures.svelte";
+  let { game, shots, online, page = "", onchanged } = $props();
+  let fromPage = $state(false);
+  let adding = $state(false);
+  async function addUrls(urls) {
+    adding = true;
+    error = "";
+    try {
+      await api.screenshotsAddUrls(game.id, urls);
+      fromPage = false;
+      onchanged();
+    } catch (e) {
+      error = String(e);
+    } finally {
+      adding = false;
+    }
+  }
   let open = $state(-1);
   let error = $state("");
 
@@ -32,8 +48,17 @@
 <div class="box">
   <div class="head">
     <h4>Screenshots</h4>
-    <button class="btn small" disabled={!online} onclick={async () => add(await pickFile({ images: true, multiple: true }))}>＋ Add screenshots…</button>
+    <div class="row">
+      <button class="btn small" disabled={!online} onclick={() => (fromPage = !fromPage)}>🌐 From a web page…</button>
+      <button class="btn small" disabled={!online} onclick={async () => add(await pickFile({ images: true, multiple: true }))}>＋ Add screenshots…</button>
+    </div>
   </div>
+  {#if fromPage}
+    <div class="from">
+      <PagePictures {page} multiple onpick={addUrls} />
+      {#if adding}<p class="muted">Downloading and adding…</p>{/if}
+    </div>
+  {/if}
   {#if shots.length}
     <div class="strip">
       {#each shots as [name, url], i (name)}
@@ -63,6 +88,8 @@
   .box { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px; }
   .head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
   h4 { margin: 0; font-size: 13px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); }
+  .row { display: flex; gap: 8px; }
+  .from { margin-bottom: 14px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg-2); }
   .strip { display: grid; grid-auto-flow: column; grid-auto-columns: 300px; gap: 12px; overflow-x: auto; padding-bottom: 6px; }
   .shot { padding: 0; border: 2px solid transparent; border-radius: 10px; overflow: hidden; cursor: zoom-in; background: var(--bg-2); transition: border-color .12s; }
   .shot:hover { border-color: var(--accent); }

@@ -195,38 +195,79 @@ fn game_root(dir: &Path) -> PathBuf {
     }
 }
 
-/// Where a new game would go on the shelf.
-pub fn destination(cfg: &Config, kind: Kind, group: &str, name: &str) -> Result<PathBuf> {
+/// A folder about to hold versions must not be a game itself (programs right inside).
+pub fn check_version_parent(parent: &Path, except: Option<&Path>) -> Result<()> {
+    if except == Some(parent) {
+        return Ok(()); // the game being turned into one of its versions
+    }
+    if let Ok(items) = shelf::listing(parent) {
+        if !shelf::holds_versions(&items) && items.iter().any(|e| e.is_file && shelf::is_program(&e.name)) {
+            bail!(
+                "{} is already a single game. Open it and use Move / Rename to give it a version first, then add this one beside it.",
+                parent.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Where a new game would go on the shelf. With a version: `<group>/<name>/<version>`.
+pub fn destination(cfg: &Config, kind: Kind, group: &str, name: &str, version: &str) -> Result<PathBuf> {
     let clean = |s: &str| s.replace('/', "-").trim().to_string();
-    let (group, name) = (clean(group), clean(name));
+    // the group may have a subgroup: "Sonic The Hedgehog/Classic"
+    let group = group.split('/').map(|p| p.trim()).filter(|p| !p.is_empty() && *p != "." && *p != "..").collect::<Vec<_>>().join("/");
+    let (name, version) = (clean(name), clean(version));
     if group.is_empty() || name.is_empty() {
         bail!("give the game a name and a group");
     }
     Ok(match kind {
+        Kind::Fan | Kind::NonSteam if !version.is_empty() => cfg.shelf().join(kind.folder()).join(group).join(name).join(version),
         Kind::Fan | Kind::NonSteam => cfg.shelf().join(kind.folder()).join(group).join(name),
         Kind::Rom => shelf::rom_games_root(&cfg.shelf().join("roms").join(&group), cfg.emulator(&group)).join(name),
         Kind::Steam => bail!("Steam games are archived by the NAS"),
     })
 }
 
-/// Put a game on the shelf: unpack if needed, then copy. Returns where it went.
+/// Put a game on the shelf: unpack if needed, then copy. Returns where it went, and
+/// the checksums of what was copied (taken from the unpacked files on this PC).
 pub fn place(
     cfg: &Config,
     source: &Path,
     kind: Kind,
     group: &str,
     name: &str,
+    version: &str,
     cancel: &Cancel,
     status: &mut dyn FnMut(&str),
     cb: &mut dyn FnMut(&Progress),
-) -> Result<PathBuf> {
+) -> Result<(PathBuf, crate::integrity::Manifest)> {
     if !cfg.shelf_online() {
         bail!("the shelf isn't reachable");
     }
-    let dst = destination(cfg, kind, group, name)?;
+    let dst = destination(cfg, kind, group, name, version)?;
+    let versioned = kind != Kind::Rom && !version.trim().is_empty();
+    if versioned {
+        check_version_parent(dst.parent().unwrap(), None)?;
+    }
     if dst.exists() && shelf::listing(&dst).map_or(false, |l| !l.is_empty()) {
         bail!("{} is already on the shelf; pick another name", dst.display());
     }
+    if versioned {
+        fs::create_dir_all(dst.parent().unwrap())?;
+        fs::write(dst.parent().unwrap().join(shelf::VERSIONS_MARKER), "")?;
+    }
+    let m = place_at(source, &dst, cancel, status, cb)?;
+    Ok((dst, m))
+}
+
+/// Unpack (if needed) and copy `source` into the folder `dst`, with checksums of what was copied.
+pub fn place_at(
+    source: &Path,
+    dst: &Path,
+    cancel: &Cancel,
+    status: &mut dyn FnMut(&str),
+    cb: &mut dyn FnMut(&Progress),
+) -> Result<crate::integrity::Manifest> {
     let (root, temp) = if is_archive(source) {
         status("unpacking");
         let r = unpack(source)?;
@@ -234,14 +275,18 @@ pub fn place(
     } else {
         (source.to_path_buf(), false)
     };
-    status("copying to the shelf");
-    fs::create_dir_all(&dst)?;
-    let res = transfer::copy_tree(&root, &dst, &|_| false, cancel, cb);
+    let res = (|| {
+        status("checksums");
+        let m = crate::integrity::hash_tree(&root, cancel, cb)?;
+        status("copying to the shelf");
+        fs::create_dir_all(dst)?;
+        transfer::copy_tree(&root, dst, &|_| false, cancel, cb)?;
+        Ok(m)
+    })();
     if temp {
         let _ = fs::remove_dir_all(temp_root());
     }
-    res?;
-    Ok(dst)
+    res
 }
 
 #[cfg(test)]
@@ -271,10 +316,17 @@ mod tests {
         assert_eq!(i.name, "Sonic Robo Blast 2");
         assert_eq!(i.kind, Kind::Fan);
         assert_eq!(i.found, ["SRB2/srb2win.exe"]);
-        let dst = place(&cfg, &zp, Kind::Fan, "Sonic The Hedgehog", &i.name, &Cancel::default(), &mut |_| {}, &mut |_| {}).unwrap();
+        let (dst, m) = place(&cfg, &zp, Kind::Fan, "Sonic The Hedgehog", &i.name, "", &Cancel::default(), &mut |_| {}, &mut |_| {}).unwrap();
+        assert_eq!(m.len(), 2);
         assert!(dst.join("srb2win.exe").exists());
         assert!(dst.join("data/main.pk3").exists());
         assert!(!dst.join("__MACOSX").exists());
+
+        // a second version beside the first is refused until the first has a version itself
+        assert!(place(&cfg, &zp, Kind::Fan, "Sonic The Hedgehog", &i.name, "v2", &Cancel::default(), &mut |_| {}, &mut |_| {}).is_err());
+        let (v, _) = place(&cfg, &zp, Kind::Fan, "Sonic The Hedgehog", "Sonic of the Ring", "V 0.6", &Cancel::default(), &mut |_| {}, &mut |_| {}).unwrap();
+        assert!(v.ends_with("Sonic of the Ring/V 0.6") && v.join("srb2win.exe").exists());
+        assert!(v.parent().unwrap().join(shelf::VERSIONS_MARKER).exists());
 
         // a ROM is recognised by its type
         let (k, sys, _) = guess(&cfg, &["Galaxy/game.iso".to_string()]);

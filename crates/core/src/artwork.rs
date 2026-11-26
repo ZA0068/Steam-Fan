@@ -422,8 +422,29 @@ pub fn find_sgdb(g: &Game) -> Result<Option<SgdbGame>> {
         return Ok(None);
     }
     let hits = sgdb_search(&term)?;
-    let exact = hits.iter().find(|h| h.name.eq_ignore_ascii_case(&term)).cloned();
-    Ok(exact.or_else(|| hits.into_iter().next()))
+    // Only take a result whose name really is this game. Fan games are often missing on
+    // SteamGridDB, and the closest name is then a different game ("Adventure Pack Season 2
+    // Demo" found a Taiko no Tatsujin pack). Better no picture than a wrong one; the user
+    // can still pick any result by hand in the artwork picker.
+    Ok(hits.into_iter().find(|h| same_title(&h.name, &term)))
+}
+
+fn squash(s: &str) -> String {
+    s.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect()
+}
+
+/// "Sonic 3 A.I.R." ~ "Sonic 3: Angel Island Revisited"? No. "Sonic Robo Blast 2" ~ "Sonic Robo Blast 2"? Yes.
+pub fn same_title(a: &str, b: &str) -> bool {
+    let (a, b) = (squash(a), squash(b));
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    if a == b {
+        return true;
+    }
+    // one inside the other, and nearly the same length ("Super Mario 63" / "Super Mario 63 Remake" is not)
+    let (short, long) = if a.len() <= b.len() { (&a, &b) } else { (&b, &a) };
+    long.contains(short.as_str()) && short.len() * 10 >= long.len() * 9
 }
 
 /// Fill in the pictures a game is missing from SteamGridDB. Returns what was added.
@@ -472,6 +493,7 @@ mod tests {
             rel: format!("G/{name}"),
             system: String::new(),
             name: name.into(),
+            version: String::new(),
             group: "G".into(),
             program: String::new(),
             platform: Platform::Windows,
@@ -489,6 +511,9 @@ mod tests {
         assert_eq!(search_name(&game("Sonic 3 A.I.R.")), "Sonic 3 A.I.R.");
         assert_eq!(search_name(&game("Sonic Robo Blast 2 v2.2.13")), "Sonic Robo Blast 2");
         assert_eq!(encode("Kirby's Epic Yarn"), "Kirby%27s%20Epic%20Yarn");
+        assert!(same_title("Sonic Robo Blast 2", "sonic robo-blast 2"));
+        assert!(!same_title("Taiko no Tatsujin: Rhythmic Adventure Pack", "Adventure Pack Season 2 Demo"));
+        assert!(!same_title("Super Mario 63 Remake", "Super Mario 63"));
     }
 
     #[test]
@@ -547,6 +572,12 @@ pub struct Info {
     pub released: String,
     /// Web pages: SFGHQ, the game's site, a video...
     pub links: Vec<String>,
+    /// The game's page (SFGHQ showcase, itch.io page...).
+    pub page: String,
+    /// Where the game's file can be downloaded (MEGA, Google Drive, a direct link).
+    pub download: String,
+    /// What the download link served last time (size, date), to notice a newer upload.
+    pub download_stamp: String,
 }
 
 /// The info on this PC (copied from the shelf), or empty.
@@ -651,4 +682,108 @@ fn mirror_extras(cfg: &Config, g: &Game) -> bool {
         }
     }
     changed
+}
+
+// ---------------------------------------------------------------- pictures on a web page
+
+/// Every picture on a web page (a game's SFGHQ showcase, its itch.io page...): the page's
+/// own preview picture first, then the images in it and links to images. Avatars and icons are left out.
+pub fn page_images(url: &str) -> Result<Vec<String>> {
+    let html = ureq::get(url)
+        .set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) Steam-Fan/0.1")
+        .timeout(std::time::Duration::from_secs(20))
+        .call()
+        .context("cannot open that page")?
+        .into_string()?;
+    Ok(images_in_html(url, &html))
+}
+
+fn absolute(base: &str, link: &str) -> Option<String> {
+    let link = link.trim().replace("&amp;", "&");
+    if link.starts_with("data:") || link.is_empty() {
+        return None;
+    }
+    if link.starts_with("http://") || link.starts_with("https://") {
+        return Some(link);
+    }
+    let scheme = if base.starts_with("http://") { "http:" } else { "https:" };
+    if let Some(rest) = link.strip_prefix("//") {
+        return Some(format!("{scheme}//{rest}"));
+    }
+    let after = base.split("//").nth(1)?;
+    let host = after.split('/').next()?;
+    if link.starts_with('/') {
+        return Some(format!("{scheme}//{host}{link}"));
+    }
+    let dir = base.split(['?', '#']).next()?.rsplit_once('/').map(|(d, _)| d)?;
+    Some(format!("{dir}/{link}"))
+}
+
+pub fn images_in_html(page: &str, html: &str) -> Vec<String> {
+    use regex::Regex;
+    let meta = Regex::new(r#"(?i)<meta[^>]+(?:property|name)=["'](?:og:image|twitter:image)["'][^>]*content=["']([^"']+)["']|<meta[^>]+content=["']([^"']+)["'][^>]*(?:property|name)=["'](?:og:image|twitter:image)["']"#).unwrap();
+    let img = Regex::new(r#"(?i)<img[^>]+?(?:data-src|data-url|src)=["']([^"']+)["']"#).unwrap();
+    let href = Regex::new(r#"(?i)<a[^>]+href=["']([^"']+?(?:\.(?:png|jpe?g|webp|gif)(?:\?[^"']*)?|/attachments/[^"']+))["']"#).unwrap();
+    let mut out: Vec<String> = vec![];
+    let mut push = |u: Option<String>| {
+        if let Some(u) = u {
+            let low = u.to_lowercase();
+            let junk = ["avatar", "smilie", "emoji", "favicon", "/styles/", "gravatar", "spacer", "pixel", "logo.svg", "badge", ".svg"]
+                .iter()
+                .any(|j| low.contains(j));
+            if !junk && !out.contains(&u) {
+                out.push(u);
+            }
+        }
+    };
+    for c in meta.captures_iter(html) {
+        push(c.get(1).or(c.get(2)).and_then(|m| absolute(page, m.as_str())));
+    }
+    for c in href.captures_iter(html) {
+        push(absolute(page, &c[1]));
+    }
+    for c in img.captures_iter(html) {
+        push(absolute(page, &c[1]));
+    }
+    out.truncate(80);
+    out
+}
+
+/// Download pictures by address and add them as screenshots.
+pub fn add_screenshots_from_urls(cfg: &Config, g: &Game, urls: &[String]) -> Result<usize> {
+    let dir = dirs::cache_dir().unwrap_or_else(|| crate::config::home().join(".cache")).join("steam-fan/shots");
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir)?;
+    let mut files = vec![];
+    for (i, u) in urls.iter().enumerate() {
+        let bytes = download(u)?;
+        let p = dir.join(format!("{i:03}"));
+        fs::write(&p, bytes)?;
+        files.push(p);
+    }
+    let n = add_screenshots(cfg, g, &files);
+    let _ = fs::remove_dir_all(&dir);
+    n
+}
+
+#[cfg(test)]
+mod page_tests {
+    use super::*;
+    #[test]
+    fn images_from_a_showcase_page() {
+        let html = r#"<html><head><meta property="og:image" content="https://sonicfangameshq.com/data/showcase/742.jpg?1700"></head>
+        <body><img src="/data/avatars/s/1.jpg"><a href="/forums/attachments/shot1-png.1234/"><img src="/forums/attachments/shot1-png.1234/thumb"></a>
+        <img data-src="//cdn.example.com/a.webp"><img src="data:image/gif;base64,xx"><img src="images/rel.png"></body></html>"#;
+        let got = images_in_html("https://sonicfangameshq.com/forums/showcase/advpack.742/", html);
+        assert_eq!(
+            got,
+            [
+                "https://sonicfangameshq.com/data/showcase/742.jpg?1700",
+                "https://sonicfangameshq.com/forums/attachments/shot1-png.1234/",
+                "https://sonicfangameshq.com/forums/attachments/shot1-png.1234/thumb",
+                "https://cdn.example.com/a.webp",
+                "https://sonicfangameshq.com/forums/showcase/advpack.742/images/rel.png",
+            ]
+        );
+    }
 }

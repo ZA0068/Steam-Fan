@@ -15,7 +15,7 @@
     const q = search.trim().toLowerCase();
     return games.filter((g) =>
       (view === "all" || (view === "pc" ? g.on_pc : g.kind === view)) &&
-      (!q || g.name.toLowerCase().includes(q) || g.group.toLowerCase().includes(q)));
+      (!q || g.name.toLowerCase().includes(q) || g.group.toLowerCase().includes(q) || (g.version ?? "").toLowerCase().includes(q)));
   });
 
   // sections: by kind on the overview pages, by group (Sonic, Kirby, wii...) inside a kind
@@ -30,7 +30,7 @@
     const keys = [...map.keys()];
     if (byKind) keys.sort((a, b) => order.indexOf(map.get(a)[0].kind) - order.indexOf(map.get(b)[0].kind));
     else keys.sort((a, b) => a.localeCompare(b));
-    return keys.map((k) => ({ title: k, games: map.get(k).sort((a, b) => a.name.localeCompare(b.name)) }));
+    return keys.map((k) => ({ title: k, games: map.get(k).sort((a, b) => a.name.localeCompare(b.name) || (a.version ?? "").localeCompare(b.version ?? "", undefined, { numeric: true })) }));
   });
 
   function badge(g) {
@@ -94,10 +94,11 @@
         <div class="grid" style="--w:{zoom}px">
           {#each s.games as g (g.id)}
             {@const b = badge(g)}
-            <button class="card" onclick={() => onopen(g.id)} title={g.name}>
+            <button class="card" onclick={() => onopen(g.id)} title={g.version ? `${g.name} (${g.version})` : g.name}>
               <div class="art">
                 <Cover game={g} />
                 {#if b}<span class="badge {b.cls}">{b.text}</span>{/if}
+                {#if g.version}<span class="ver">{g.version}</span>{/if}
               </div>
               <div class="title">{g.name}</div>
             </button>
@@ -153,6 +154,7 @@
   .card:focus-visible .art { box-shadow: 0 0 0 3px var(--accent); }
   .title { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #cfd9ea; }
   .badge { position: absolute; top: 8px; left: 8px; font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 99px; background: rgba(10, 17, 30, .82); backdrop-filter: blur(4px); border: 1px solid var(--line-2); color: var(--muted); }
+  .ver { position: absolute; bottom: 8px; right: 8px; font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 6px; background: rgba(75, 147, 255, .9); color: white; box-shadow: 0 2px 8px rgba(0,0,0,.4); }
   .badge.good { color: var(--good); border-color: rgba(70, 214, 143, .4); }
   .badge.warn { color: var(--warn); border-color: rgba(243, 185, 76, .4); }
   .badge.bad { color: var(--bad); border-color: rgba(255, 111, 111, .4); }

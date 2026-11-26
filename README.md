@@ -41,10 +41,11 @@ Open **Steam-Fan** from the app menu.
 - **A game's page:** a big banner with the logo, then:
   - **Play** (through Steam), **Copy to this PC** / **Remove from PC** (saves go to the shelf first).
   - For Steam games: **Install from shelf** when Steam is down, **Copy to shelf** when this PC has the newer version.
-  - **About**: a description, who made it, when, and links (SFGHQ page, website...). Press **Edit** to write it.
-  - **Screenshots**: add as many as you like (button, or drop pictures onto the page); click one to see it large, arrow keys to flip through.
+  - **About**: a description, who made it, when, the game's page (SFGHQ, itch.io...), its download link (MEGA, Google Drive, direct) and other links. Press **Edit** to write it.
+  - **Files**: **Verify** checks every file against its fingerprint (SHA-256), on the shelf and on this PC, and repairs the PC copy from the shelf. Games added in the app get fingerprints right away; for others the first Verify records them. **Check for update** asks the download link whether it serves a different file now. **Re-download** gets the game again from its link, either replacing a damaged shelf copy or adding the download as a new version. MEGA links need `sudo pacman -S megatools`; links that open a web page (MediaFire, forum pages) have to be downloaded in the browser and added with Add game.
+  - **Screenshots**: add as many as you like (button, drop pictures onto the page, or **From a web page**: paste the SFGHQ page and pick its pictures); click one to see it large, arrow keys to flip through.
   - **Move / Rename**: move it to another group (or between fan and non-Steam games), or rename it. Saves, artwork, screenshots, history and the copy on this PC go with it, and Steam keeps the same entry with its play time.
-  - **Artwork** tab: cover, banner, logo, icon. For each, **Change** lets you pick from SteamGridDB, upload a file, drop a picture onto the window, or paste a link.
+  - **Artwork** tab: cover, banner, logo, icon. For each, **Change** lets you pick from a web page (the game's SFGHQ page), from SteamGridDB, upload a file, drop a picture onto the window, or paste a link. Automatic artwork only uses SteamGridDB results whose name really matches, so a fan game without an entry there gets no picture rather than a wrong one.
 - **Add game:** drop a download (zip, 7z, rar), a folder or a ROM onto the window, or press **Add game**. Pick **Fan game / Non-Steam game / Emulator game**, the group or system, and the name. It's unpacked straight onto the shelf, gets artwork, and goes into Steam if Steam is closed.
 - **Read shelf** looks for new or changed games, then fills in missing artwork. **Artwork** does only the artwork. **Update Steam library** adds, updates and removes Steam entries. When Steam is running, the button becomes **Restart Steam & update**: it quits Steam, updates the library and starts Steam again (Steam rewrites its library when it quits, so it can't stay open).
 - **Settings:** where the shelf is (the NAS, or any folder on this PC), API keys, where games go on this PC, Proton, emulators.
@@ -73,6 +74,8 @@ Set them in **Settings** or edit the file. An environment variable with the same
 steam-fan                    open the library window
 steam-fan add <zip|folder|rom> --group "Sonic The Hedgehog" [--kind fan|nonsteam|rom] [--name ...]
 steam-fan art [--again]      artwork: copy from the shelf, fetch missing ones, update Steam's
+steam-fan verify "Sonic Robo Blast 2"          check files against their fingerprints, repair the PC copy
+steam-fan redownload "Sonic Robo Blast 2" [--version "v2.2.14"]   get it again from its download link
 steam-fan sync [--dry-run] [--only "Mario 63"] [--rescan]
 steam-fan list [--installed]
 steam-fan install "Super Mario 63"

@@ -63,6 +63,7 @@ struct ArtView {
 struct GameView {
     id: String,
     name: String,
+    version: String,
     kind: Kind,
     kind_label: &'static str,
     group: String,
@@ -187,6 +188,7 @@ async fn library(app: State<'_, App>) -> Res<LibraryView> {
                     on_pc,
                     id: g.id,
                     name: g.name,
+                    version: g.version,
                     kind: g.kind,
                     group: g.group,
                     system: g.system,
@@ -484,12 +486,12 @@ async fn screenshot_remove(app: State<'_, App>, id: String, name: String) -> Res
 
 /// Move or rename a game. Returns its new id.
 #[tauri::command]
-async fn relocate(app: State<'_, App>, id: String, kind: Kind, group: String, name: String) -> Res<String> {
+async fn relocate(app: State<'_, App>, id: String, kind: Kind, group: String, name: String, version: String) -> Res<String> {
     let cfg = cfg(&app);
     blocking(move || {
         let g = find(&id)?;
         let mut db = db()?;
-        library::relocate(&cfg, &mut db, &g, kind, &group, &name).map_err(err)
+        library::relocate(&cfg, &mut db, &g, kind, &group, &name, &version).map_err(err)
     })
     .await
 }
@@ -526,6 +528,56 @@ fn sync_steam_restart(handle: tauri::AppHandle, app: State<'_, App>) -> u64 {
     })
 }
 
+/// Check a game's files against its checksums; repair the PC copy from the shelf.
+#[tauri::command]
+fn verify(handle: tauri::AppHandle, app: State<'_, App>, id: String) -> Res<u64> {
+    let cfg = cfg(&app);
+    let g = find(&id)?;
+    Ok(app.jobs.spawn(&handle, &format!("Verifying {}", g.full_name()), move |ctx: Ctx| {
+        let rep = steam_fan_core::integrity::verify(&cfg, &g, &ctx.cancel, &mut |s| ctx.status(s), &mut |p| ctx.progress(p))?;
+        let msg = rep.summary();
+        Db::open_default()?.log(&g.id, &format!("verified: {msg}"));
+        if rep.shelf.as_ref().map_or(false, |s| !s.ok()) {
+            anyhow::bail!("{msg}");
+        }
+        Ok(msg)
+    }))
+}
+
+/// Download a game again from its link: replace the shelf copy, or add it as a new version.
+#[tauri::command]
+fn redownload(handle: tauri::AppHandle, app: State<'_, App>, id: String, version: Option<String>) -> Res<u64> {
+    let cfg = cfg(&app);
+    let g = find(&id)?;
+    Ok(app.jobs.spawn(&handle, &format!("Downloading {}", g.full_name()), move |ctx: Ctx| {
+        let mut db = Db::open_default()?;
+        let dst = library::redownload(&cfg, &mut db, &g, version.as_deref(), &ctx.cancel, &mut |s| ctx.status(s), &mut |p| ctx.progress(p))?;
+        Ok(format!("Downloaded and put on the shelf at {}", dst.display()))
+    }))
+}
+
+#[tauri::command]
+async fn check_update(id: String) -> Res<String> {
+    blocking(move || steam_fan_core::source::check_update(&find(&id)?).map_err(err)).await
+}
+
+#[tauri::command]
+async fn page_images(url: String) -> Res<Vec<String>> {
+    blocking(move || artwork::page_images(&url).map_err(err)).await
+}
+
+#[tauri::command]
+async fn screenshots_add_urls(app: State<'_, App>, id: String, urls: Vec<String>) -> Res<usize> {
+    let cfg = cfg(&app);
+    blocking(move || {
+        let g = find(&id)?;
+        let n = artwork::add_screenshots_from_urls(&cfg, &g, &urls).map_err(err)?;
+        db()?.log(&g.id, &format!("{n} screenshots added from a web page"));
+        Ok(n)
+    })
+    .await
+}
+
 // ---------------------------------------------------------------- adding games
 
 #[tauri::command]
@@ -535,10 +587,10 @@ async fn import_inspect(app: State<'_, App>, path: String) -> Res<import::Inspec
 }
 
 #[tauri::command]
-fn import_place(handle: tauri::AppHandle, app: State<'_, App>, source: String, kind: Kind, group: String, name: String) -> u64 {
+fn import_place(handle: tauri::AppHandle, app: State<'_, App>, source: String, kind: Kind, group: String, name: String, version: String) -> u64 {
     let cfg = cfg(&app);
     app.jobs.spawn(&handle, &format!("Adding {name} to the shelf"), move |ctx: Ctx| {
-        let dst = import::place(&cfg, &PathBuf::from(&source), kind, &group, &name, &ctx.cancel, &mut |s| ctx.status(s), &mut |p| ctx.progress(p))?;
+        let (dst, sums) = import::place(&cfg, &PathBuf::from(&source), kind, &group, &name, &version, &ctx.cancel, &mut |s| ctx.status(s), &mut |p| ctx.progress(p))?;
         ctx.status("reading the shelf");
         let mut db = Db::open_default()?;
         library::refresh(&cfg, &mut db, false, |_| {})?;
@@ -547,6 +599,7 @@ fn import_place(handle: tauri::AppHandle, app: State<'_, App>, source: String, k
         ctx.status("artwork");
         library::refresh_art(&cfg, &db, &games, true, false, |s| ctx.status(s));
         for g in &games {
+            let _ = steam_fan_core::integrity::write(&steam_fan_core::integrity::manifest_path(&cfg, g), &sums);
             db.log(&g.id, "added to the shelf");
         }
         let mut msg = format!("{name} is on the shelf");
@@ -688,6 +741,7 @@ fn serve_art(req: &tauri::http::Request<Vec<u8>>) -> tauri::http::Response<Cow<'
         rel: String::new(),
         system: String::new(),
         name: String::new(),
+        version: String::new(),
         group: String::new(),
         program: String::new(),
         platform: Platform::Windows,
@@ -725,7 +779,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             library, status, details, jobs, job_cancel, refresh, sync_steam, install, remove, archive_upload,
             refresh_art, art_search, art_options, art_set_url, art_set_file, art_remove, import_inspect,
-            import_place, groups, info_save, screenshots_add, screenshot_remove, relocate, sync_steam_restart, settings, settings_save, secret_set, shelf_reachable, open, play, human
+            import_place, groups, info_save, screenshots_add, screenshot_remove, relocate, sync_steam_restart, verify, redownload, check_update, page_images, screenshots_add_urls, settings, settings_save, secret_set, shelf_reachable, open, play, human
         ])
         .setup(|app| {
             if let Some(w) = app.get_webview_window("main") {

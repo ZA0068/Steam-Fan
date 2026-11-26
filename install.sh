@@ -29,7 +29,9 @@ install -m 755 target/release/steam-fan-app "$BIN/steam-fan-app"
 install -m 644 packaging/steam-fan.svg "$ICONS/dev.zain.steamfan.svg"
 rm -f "$ICONS/steam-fan.svg" "$APPS/steam-fan.desktop"
 # named like the window (steam-fan-app), so the taskbar matches window and entry
-install -m 644 packaging/steam-fan.desktop "$APPS/steam-fan-app.desktop"
+# full path: the app menu doesn't always know about ~/.local/bin
+sed "s#^Exec=steam-fan-app#Exec=$BIN/steam-fan-app#" packaging/steam-fan.desktop > "$APPS/steam-fan-app.desktop"
+chmod 644 "$APPS/steam-fan-app.desktop"
 command -v update-desktop-database > /dev/null && update-desktop-database "$APPS" || true
 command -v gtk-update-icon-cache > /dev/null && gtk-update-icon-cache -q "$HOME/.local/share/icons/hicolor" 2> /dev/null || true
 echo "== Installed steam-fan, steam-fan-app and the Steam-Fan menu entry"

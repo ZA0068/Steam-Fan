@@ -134,7 +134,7 @@ pub fn wanted(cfg: &Config, g: &Game, icon: Option<PathBuf>) -> Option<Wanted> {
             let exe = local.join(&g.program);
             Some(Wanted {
                 id: g.id.clone(),
-                name: g.name.clone(),
+                name: g.full_name(),
                 exe: exe.to_string_lossy().into_owned(),
                 start_dir: exe.parent().unwrap_or(&local).to_string_lossy().into_owned(),
                 launch_options: steam::launch_options(&bin, &g.id, true),
@@ -230,6 +230,25 @@ pub fn install(cfg: &Config, db: &Db, g: &Game, cancel: &Cancel, cb: &mut dyn Fn
     std::fs::create_dir_all(&dst)?;
     db.log(&g.id, "download started");
     transfer::copy_tree(&src, &dst, &|r: &Path| r.to_string_lossy().ends_with(".steam-fan-part"), cancel, cb)?;
+    // check what arrived against the checksums, when the game has them; copy bad files once more
+    if let Some(m) = crate::integrity::read(&crate::integrity::manifest_path(cfg, g)) {
+        let c = crate::integrity::check(&m, &dst, false, cancel, cb)?;
+        if !c.ok() {
+            let again: Vec<std::path::PathBuf> = c.missing.iter().chain(&c.damaged).map(Into::into).collect();
+            let base = if src.is_file() { src.parent().unwrap().to_path_buf() } else { src.clone() };
+            transfer::copy_listed(&base, &dst, &again)?;
+            let c2 = crate::integrity::check(&m, &dst, false, cancel, cb)?;
+            if !c2.ok() {
+                db.log(&g.id, "copy doesn't match its checksums: the shelf copy may be damaged");
+                bail!(
+                    "{} files of {} don't match their checksums, also after copying them again. The shelf copy may be damaged: use Verify on the game's page.",
+                    c2.missing.len() + c2.damaged.len(),
+                    g.full_name()
+                );
+            }
+        }
+        db.log(&g.id, "copy checked against its checksums");
+    }
     if matches!(g.kind, Kind::Fan | Kind::NonSteam) {
         let n = saves::restore_game_folder(cfg, g)?;
         if n > 0 {
@@ -251,7 +270,7 @@ pub fn remove(cfg: &Config, db: &Db, g: &Game) -> Result<()> {
         return Ok(());
     }
     if crate::launch::game_running(&local) {
-        bail!("{} seems to be running; quit it first", g.name);
+        bail!("{} seems to be running (or a program is open in its folder); close it first", g.name);
     }
     saves::backup(cfg, g).with_context(|| format!("{} was NOT removed", g.name))?;
     std::fs::remove_dir_all(&local)?;
@@ -351,8 +370,9 @@ pub fn refresh_art(cfg: &Config, db: &Db, games: &[Game], fetch: bool, again: bo
 /// Move or rename a game on the shelf: its folder, its saves, its artwork, the copy
 /// on this PC, and its history all follow. Its Steam entry is kept (with its play
 /// time and artwork) and updated the next time Steam's library is updated.
-/// `group` may be "Group/Subgroup". Returns the game's new id.
-pub fn relocate(cfg: &Config, db: &mut Db, g: &Game, kind: Kind, group: &str, name: &str) -> Result<String> {
+/// `group` may be "Group/Subgroup". A `version` keeps the game as one of several
+/// versions side by side (`<group>/<name>/<version>`). Returns the game's new id.
+pub fn relocate(cfg: &Config, db: &mut Db, g: &Game, kind: Kind, group: &str, name: &str, version: &str) -> Result<String> {
     use crate::artwork;
     use std::fs;
     if g.kind == Kind::Steam || kind == Kind::Steam {
@@ -379,14 +399,17 @@ pub fn relocate(cfg: &Config, db: &mut Db, g: &Game, kind: Kind, group: &str, na
             }
         }
     }
+    let version = clean(version).replace('/', "-");
     let (rel, system) = match kind {
         Kind::Rom => (name.clone(), group.clone()),
+        _ if !version.is_empty() => (format!("{group}/{name}/{version}"), String::new()),
         _ => (format!("{group}/{name}"), String::new()),
     };
     let mut ng = g.clone();
     ng.kind = kind;
     ng.rel = rel.clone();
     ng.system = system.clone();
+    ng.version = if kind == Kind::Rom { String::new() } else { version.clone() };
     ng.id = Game::make_id(kind, &system, &rel);
     if ng.id == g.id {
         return Ok(ng.id);
@@ -397,17 +420,33 @@ pub fn relocate(cfg: &Config, db: &mut Db, g: &Game, kind: Kind, group: &str, na
     }
     let local_old = g.local_path(cfg);
     if local_old.exists() && crate::launch::game_running(&local_old) {
-        bail!("{} seems to be running; quit it first", g.name);
+        bail!("{} seems to be running (or a program is open in its folder); close it first", g.name);
     }
 
     let mv = |a: &Path, b: &Path| -> Result<()> {
-        if a.exists() {
+        if !a.exists() {
+            return Ok(());
+        }
+        let err = || format!("cannot move {} to {}", a.display(), b.display());
+        if b.starts_with(a) {
+            // into a folder inside itself (a game becoming one of its own versions): step aside first
+            let tmp = a.with_file_name(format!("{}.steam-fan-moving", a.file_name().unwrap().to_string_lossy()));
+            fs::rename(a, &tmp).with_context(err)?;
             fs::create_dir_all(b.parent().unwrap())?;
-            fs::rename(a, b).with_context(|| format!("cannot move {} to {}", a.display(), b.display()))?;
+            fs::rename(&tmp, b).with_context(err)?;
+        } else {
+            fs::create_dir_all(b.parent().unwrap())?;
+            fs::rename(a, b).with_context(err)?;
         }
         Ok(())
     };
+    if !ng.version.is_empty() {
+        crate::import::check_version_parent(&new_shelf.parent().unwrap(), Some(&old_shelf))?;
+    }
     mv(&old_shelf, &new_shelf)?;
+    if !ng.version.is_empty() {
+        let _ = fs::write(new_shelf.parent().unwrap().join(crate::shelf::VERSIONS_MARKER), "");
+    }
     // emulator saves belong to the whole system, so they stay where they are
     if kind != Kind::Rom {
         mv(&g.save_path(cfg), &ng.save_path(cfg))?;
@@ -419,12 +458,101 @@ pub fn relocate(cfg: &Config, db: &mut Db, g: &Game, kind: Kind, group: &str, na
     }
     // leave no empty group folders behind
     for p in [old_shelf.parent(), local_old.parent()].into_iter().flatten() {
+        // a versions folder whose last version moved out: only the marker is left
+        if fs::read_dir(p).map(|d| d.flatten().all(|e| e.file_name() == crate::shelf::VERSIONS_MARKER)).unwrap_or(false) {
+            let _ = fs::remove_file(p.join(crate::shelf::VERSIONS_MARKER));
+        }
         let _ = fs::remove_dir(p);
     }
     db.rename_game(&g.id, &ng.id)?;
     db.log(&ng.id, &format!("moved from {}", g.id));
     refresh(cfg, db, false, |_| {})?;
     Ok(ng.id)
+}
+
+/// Download a game again from its link and put it on the shelf.
+/// * `as_version` given: the download is added beside it as another version.
+/// * otherwise it replaces the shelf copy (the old one is kept until the new one is in place);
+///   the copy on this PC is removed after its saves are backed up, so the next Play gets the new files.
+/// Returns where it went.
+pub fn redownload(
+    cfg: &Config,
+    db: &mut Db,
+    g: &Game,
+    as_version: Option<&str>,
+    cancel: &Cancel,
+    status: &mut dyn FnMut(&str),
+    cb: &mut dyn FnMut(&Progress),
+) -> Result<PathBuf> {
+    use crate::{artwork, import, integrity, source};
+    use std::fs;
+    if g.kind == Kind::Steam {
+        bail!("Steam games are updated by Steam and the NAS");
+    }
+    if !cfg.shelf_online() {
+        bail!("the shelf isn't reachable");
+    }
+    let mut info = artwork::info(g);
+    let url = info.download.trim().to_string();
+    if url.is_empty() {
+        bail!("no download link: add it under About > Edit");
+    }
+    status("downloading");
+    let file = source::fetch(&url, cancel, cb)?;
+    let result = (|| -> Result<PathBuf> {
+        if let Some(v) = as_version.filter(|v| !v.trim().is_empty()) {
+            let group = match g.kind {
+                Kind::Rom => g.system.clone(),
+                _ => {
+                    // the group is the path without the name (and version)
+                    let parts: Vec<&str> = g.rel.split('/').collect();
+                    let keep = parts.len().saturating_sub(if g.version.is_empty() { 1 } else { 2 });
+                    parts[..keep].join("/")
+                }
+            };
+            let (dst, m) = import::place(cfg, &file, g.kind, &group, &g.name, v, cancel, status, cb)?;
+            refresh(cfg, db, false, |_| {})?;
+            if let Some(ng) = db.games()?.into_iter().find(|x| x.shelf_path(cfg) == dst) {
+                let _ = integrity::write(&integrity::manifest_path(cfg, &ng), &m);
+                let mut ni = info.clone();
+                source::save_stamp(cfg, &ng, &mut ni);
+                db.log(&ng.id, "downloaded from its link");
+            }
+            return Ok(dst);
+        }
+        let shelf = g.shelf_path(cfg);
+        if shelf.is_file() {
+            bail!("this game is a single program file; download it by hand and replace it");
+        }
+        if is_installed(cfg, g) {
+            status("backing up saves");
+            remove(cfg, db, g)?;
+        }
+        let aside = shelf.with_file_name(format!("{}.steam-fan-old", shelf.file_name().unwrap().to_string_lossy()));
+        let _ = fs::remove_dir_all(&aside);
+        fs::rename(&shelf, &aside).context("cannot move the old copy aside")?;
+        match import::place_at(&file, &shelf, cancel, status, cb) {
+            Ok(m) => {
+                let _ = fs::remove_dir_all(&aside);
+                integrity::write(&integrity::manifest_path(cfg, g), &m)?;
+                source::save_stamp(cfg, g, &mut info);
+                db.log(&g.id, "downloaded again from its link; the shelf copy was replaced");
+                // the program may have a new name
+                let _ = db.set_program(&g.id, "", g.platform);
+                let mut v = vec![g.clone()];
+                find_programs(cfg, db, &mut v, &[], true, |_| {})?;
+                refresh(cfg, db, false, |_| {})?;
+                Ok(shelf)
+            }
+            Err(e) => {
+                let _ = fs::remove_dir_all(&shelf);
+                let _ = fs::rename(&aside, &shelf);
+                Err(e.context("the old copy was put back"))
+            }
+        }
+    })();
+    source::downloads_dir_clean();
+    result
 }
 
 #[cfg(test)]
@@ -461,7 +589,7 @@ mod tests {
         })
         .unwrap();
 
-        let new = relocate(&cfg, &mut db, &g, Kind::Fan, "Super Mario Bros", "Super Mario 63").unwrap();
+        let new = relocate(&cfg, &mut db, &g, Kind::Fan, "Super Mario Bros", "Super Mario 63", "").unwrap();
         assert_eq!(new, "fan:Super Mario Bros/Super Mario 63");
         assert!(r.join("shelf/fangames/Super Mario Bros/Super Mario 63/sm63.exe").exists());
         assert!(!r.join("shelf/fangames/Mario").exists(), "empty old group removed");
@@ -474,5 +602,23 @@ mod tests {
         assert!(out.steam.added.is_empty() && out.steam.removed.is_empty(), "{out:?}");
         assert_eq!(steam::shortcut_ids(&cfg)[&new], before);
         assert!(db.renames().unwrap().is_empty());
+    }
+
+    #[test]
+    fn game_becomes_one_of_its_versions() {
+        let t = tempfile::tempdir().unwrap();
+        let r = t.path();
+        std::env::set_var("XDG_DATA_HOME", r.join("data"));
+        fs::create_dir_all(r.join("shelf/fangames/Sonic/Sonic Network Land")).unwrap();
+        fs::write(r.join("shelf/fangames/Sonic/Sonic Network Land/snl.exe"), b"MZ").unwrap();
+        let cfg = Config { shelf: r.join("shelf").to_string_lossy().into(), fan_local: r.join("pc").to_string_lossy().into(), ..Default::default() };
+        let mut db = Db::in_memory().unwrap();
+        refresh(&cfg, &mut db, false, |_| {}).unwrap();
+        let g = db.games().unwrap().pop().unwrap();
+        let id = relocate(&cfg, &mut db, &g, Kind::Fan, "Sonic", "Sonic Network Land", "v96").unwrap();
+        assert_eq!(id, "fan:Sonic/Sonic Network Land/v96");
+        assert!(r.join("shelf/fangames/Sonic/Sonic Network Land/v96/snl.exe").exists());
+        let g = db.games().unwrap().pop().unwrap();
+        assert_eq!((g.name.as_str(), g.version.as_str()), ("Sonic Network Land", "v96"));
     }
 }

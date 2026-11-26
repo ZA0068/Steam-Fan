@@ -6,9 +6,13 @@
   // svelte-ignore state_referenced_locally
   let kind = $state(game.kind);
   // svelte-ignore state_referenced_locally
-  let group = $state(game.kind === "Rom" ? game.system : game.id.slice(game.id.indexOf(":") + 1).split("/").slice(0, -1).join("/"));
+  const parts = game.id.slice(game.id.indexOf(":") + 1).split("/");
   // svelte-ignore state_referenced_locally
-  let name = $state(game.id.slice(game.id.indexOf(":") + 1).split("/").pop().replace(/\.(exe|x86_64|appimage)$/i, ""));
+  let version = $state(game.version ?? "");
+  // svelte-ignore state_referenced_locally
+  let group = $state(game.kind === "Rom" ? game.system : parts.slice(0, game.version ? -2 : -1).join("/"));
+  // svelte-ignore state_referenced_locally
+  let name = $state((game.version ? parts.at(-2) : parts.at(-1)).replace(/\.(exe|x86_64|appimage)$/i, ""));
   let groups = $state({});
   let error = $state("");
   let working = $state(false);
@@ -22,7 +26,7 @@
     error = "";
     working = true;
     try {
-      const id = await api.relocate(game.id, kind, group.trim(), name.trim());
+      const id = await api.relocate(game.id, kind, group.trim(), name.trim(), kind === "Rom" ? "" : version.trim());
       onmoved(id);
     } catch (e) {
       error = String(e);
@@ -58,7 +62,10 @@
         </label>
         <label class="field"><span>Name</span><input class="input" bind:value={name} /></label>
       </div>
-      {#if kind !== "Rom"}<p class="faint small">A group can have a subgroup: <span class="mono">Sonic The Hedgehog/Classic</span></p>{/if}
+      {#if kind !== "Rom"}
+        <label class="field ver"><span>Version <i class="faint">(optional)</i></span><input class="input" bind:value={version} placeholder="e.g. v96: keeps several versions of this game side by side" /></label>
+        <p class="faint small">A group can have a subgroup: <span class="mono">Sonic The Hedgehog/Classic</span>. With a version, the game goes into <span class="mono">{group || "…"}/{name || "…"}/{version}</span>.</p>
+      {/if}
       {#if error}<p class="error">{error}</p>{/if}
     </div>
     <footer>
@@ -74,5 +81,6 @@
   .kind.on { border-color: var(--accent); background: rgba(75, 147, 255, .12); }
   .fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
   .small { font-size: 12px; margin-top: 8px; }
+  .ver { margin-top: 12px; }
   .error { color: var(--bad); user-select: text; }
 </style>

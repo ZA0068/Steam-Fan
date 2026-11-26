@@ -203,7 +203,7 @@ pub fn open_window() -> i32 {
     1
 }
 
-pub fn add(source: &str, kind: &str, group: &str, name: Option<&str>) -> i32 {
+pub fn add(source: &str, kind: &str, group: &str, name: Option<&str>, version: &str) -> i32 {
     let Ok((cfg, mut db)) = setup() else { return 2 };
     let src = std::path::PathBuf::from(source);
     let info = match import::inspect(&cfg, &src) {
@@ -222,12 +222,15 @@ pub fn add(source: &str, kind: &str, group: &str, name: Option<&str>) -> i32 {
     };
     let name = name.map(str::to_string).unwrap_or(info.name.clone());
     eprintln!("Adding {name} as {} in {group}", kind.label());
-    let res = import::place(&cfg, &src, kind, group, &name, &transfer::Cancel::default(), &mut |s| eprintln!("  {s} ..."), &mut bar);
+    let res = import::place(&cfg, &src, kind, group, &name, version, &transfer::Cancel::default(), &mut |s| eprintln!("  {s} ..."), &mut bar);
     match res {
-        Ok(dst) => {
+        Ok((dst, sums)) => {
             eprintln!("\nOn the shelf at {}", dst.display());
             if let Err(e) = library::refresh(&cfg, &mut db, false, |_| {}) {
                 return fail(e);
+            }
+            for g in db.games().unwrap_or_default().iter().filter(|g| g.shelf_path(&cfg) == dst) {
+                let _ = steam_fan_core::integrity::write(&steam_fan_core::integrity::manifest_path(&cfg, g), &sums);
             }
             eprintln!("Run `steam-fan sync` (Steam closed) to put it in Steam.");
             0
@@ -248,4 +251,41 @@ pub fn art(again: bool) -> i32 {
     }
     println!("{} copied from the shelf, {} found on SteamGridDB, {} with nothing there", rep.copied, rep.fetched, rep.not_found);
     0
+}
+
+pub fn verify(what: &str) -> i32 {
+    let Ok((cfg, db)) = setup() else { return 2 };
+    let g = match find(&db, what) {
+        Ok(g) => g,
+        Err(e) => return fail(e),
+    };
+    match steam_fan_core::integrity::verify(&cfg, &g, &transfer::Cancel::default(), &mut |s| eprintln!("  {s} ..."), &mut bar) {
+        Ok(rep) => {
+            eprintln!();
+            println!("{}", rep.summary());
+            for f in rep.shelf.iter().flat_map(|s| s.missing.iter().chain(&s.damaged)) {
+                println!("  shelf: {f}");
+            }
+            for f in &rep.repaired {
+                println!("  repaired: {f}");
+            }
+            if rep.shelf.as_ref().map_or(true, |s| s.ok()) { 0 } else { 1 }
+        }
+        Err(e) => fail(e),
+    }
+}
+
+pub fn redownload(what: &str, version: Option<&str>) -> i32 {
+    let Ok((cfg, mut db)) = setup() else { return 2 };
+    let g = match find(&db, what) {
+        Ok(g) => g,
+        Err(e) => return fail(e),
+    };
+    match library::redownload(&cfg, &mut db, &g, version, &transfer::Cancel::default(), &mut |s| eprintln!("  {s} ..."), &mut bar) {
+        Ok(dst) => {
+            eprintln!("\nOn the shelf at {}", dst.display());
+            0
+        }
+        Err(e) => fail(e),
+    }
 }

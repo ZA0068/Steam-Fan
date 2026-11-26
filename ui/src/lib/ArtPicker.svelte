@@ -1,8 +1,9 @@
 <script>
   import { onMount } from "svelte";
   import { api, pickFile } from "./api.js";
+  import PagePictures from "./PagePictures.svelte";
 
-  let { game, art, hasKey, onclose, ondone, ondroptarget } = $props();
+  let { game, art, hasKey, page = "", onclose, ondone, ondroptarget } = $props();
   const labels = { cover: "cover", hero: "banner", logo: "logo", icon: "icon" };
 
   // svelte-ignore state_referenced_locally
@@ -89,6 +90,12 @@
       </div>
 
       <div class="sgdb">
+        <b>From a web page</b>
+        <p class="muted small">Paste the game's page (SFGHQ showcase, itch.io…) and click a picture.</p>
+        <PagePictures {page} onpick={(urls) => save(api.artSetUrl(game.id, art, urls[0], null))} />
+      </div>
+
+      <div class="sgdb">
         <b>From SteamGridDB</b>
         {#if !hasKey}
           <p class="muted">Add your SteamGridDB API key in Settings to search here.</p>
@@ -133,7 +140,8 @@
   .own { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
   .own p { margin: 4px 0 0; font-size: 13px; }
   .link { display: flex; gap: 8px; margin: 12px 0 22px; }
-  .sgdb { border-top: 1px solid var(--line); padding-top: 18px; }
+  .sgdb { border-top: 1px solid var(--line); padding-top: 18px; margin-bottom: 18px; }
+  .small { font-size: 12.5px; margin: 4px 0 0; }
   .find { display: flex; gap: 8px; margin: 10px 0; }
   .results { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
   .chip { padding: 5px 11px; border-radius: 99px; border: 1px solid var(--line-2); background: var(--bg-2); color: var(--muted); cursor: pointer; font-size: 12.5px; }

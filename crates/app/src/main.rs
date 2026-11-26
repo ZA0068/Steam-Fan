@@ -54,12 +54,23 @@ enum Cmd {
         /// Name on the shelf (default: the file or folder name)
         #[arg(long)]
         name: Option<String>,
+        /// Keep it as one of several versions: <group>/<name>/<version>
+        #[arg(long, default_value = "")]
+        version: String,
     },
     /// Copy artwork from the shelf, fetch missing covers from SteamGridDB, update Steam's artwork.
     Art {
         /// Look up games on SteamGridDB again, also those where nothing was found before.
         #[arg(long)]
         again: bool,
+    },
+    /// Check a game's files against its checksums (records them the first time) and repair the PC copy.
+    Verify { game: String },
+    /// Download a game again from its link (About > Download): replace the shelf copy, or add it as a version.
+    Redownload {
+        game: String,
+        #[arg(long)]
+        version: Option<String>,
     },
     /// List the games (from the last shelf read).
     List {
@@ -96,8 +107,10 @@ fn main() {
         Some(Cmd::Sync { dry_run, only, rescan }) => cli::sync(dry_run, &only, rescan),
         Some(Cmd::Steam { args }) => cli::steam(&args),
         Some(Cmd::List { installed }) => cli::list(installed),
-        Some(Cmd::Add { source, kind, group, name }) => cli::add(&source, &kind, &group, name.as_deref()),
+        Some(Cmd::Add { source, kind, group, name, version }) => cli::add(&source, &kind, &group, name.as_deref(), &version),
         Some(Cmd::Art { again }) => cli::art(again),
+        Some(Cmd::Verify { game }) => cli::verify(&game),
+        Some(Cmd::Redownload { game, version }) => cli::redownload(&game, version.as_deref()),
         Some(Cmd::Install { game }) => cli::install(&game),
         Some(Cmd::Remove { game }) => cli::remove(&game),
         Some(Cmd::Archive { cmd }) => match cmd {

@@ -7,6 +7,8 @@
 
   let { game, status, busy, hasKey, onback, ondroptarget, onchanged, onmoved } = $props();
   let moving = $state(false);
+  let updateMsg = $state("");
+  let redl = $state(null); // the re-download dialog
   let editing = $state(null); // a copy of the info while it's being edited
   let info = $state(null);
   let tab = $state("overview");
@@ -87,6 +89,7 @@
         <div class="meta">
           <span class="pill">{game.kind_label}</span>
           <span class="pill">{game.group}</span>
+          {#if game.version}<span class="pill ver">Version {game.version}</span>{/if}
           <span class="pill">{kindText}</span>
           {#if game.size}<span class="pill">{human(game.size)}</span>{/if}
           {#if game.kind === "Steam"}
@@ -145,20 +148,26 @@
               <label class="field"><span>Made by</span><input class="input" bind:value={editing.developer} /></label>
               <label class="field"><span>Released</span><input class="input" bind:value={editing.released} placeholder="2024, or SAGE 2025" /></label>
             </div>
-            <label class="field"><span>Links (one per line: SFGHQ page, website, video…)</span><textarea class="input mono" rows="3" bind:value={editing.linksText}></textarea></label>
+            <div class="two">
+              <label class="field"><span>Game page (SFGHQ, itch.io…)</span><input class="input mono" bind:value={editing.page} placeholder="https://sonicfangameshq.com/forums/showcase/…" /></label>
+              <label class="field"><span>Download link (MEGA, Google Drive, direct)</span><input class="input mono" bind:value={editing.download} placeholder="https://mega.nz/file/…" /></label>
+            </div>
+            <label class="field"><span>Other links (one per line: website, video…)</span><textarea class="input mono" rows="2" bind:value={editing.linksText}></textarea></label>
             <div class="row">
               <button class="btn primary small" onclick={saveInfo}>Save</button>
               <button class="btn small" onclick={() => (editing = null)}>Cancel</button>
             </div>
           </div>
-        {:else if info?.info?.description || info?.info?.developer || info?.info?.links?.length}
+        {:else if info?.info?.description || info?.info?.developer || info?.info?.links?.length || info?.info?.page || info?.info?.download}
           {#if info.info.description}<p class="desc">{info.info.description}</p>{/if}
           <div class="facts">
             {#if info.info.developer}<span><span class="faint">Made by</span> {info.info.developer}</span>{/if}
             {#if info.info.released}<span><span class="faint">Released</span> {info.info.released}</span>{/if}
           </div>
-          {#if info.info.links.length}
+          {#if info.info.links.length || info.info.page || info.info.download}
             <div class="row links">
+              {#if info.info.page}<button class="btn small" onclick={() => api.open(info.info.page)}>↗ Game page</button>{/if}
+              {#if info.info.download}<button class="btn small" onclick={() => api.open(info.info.download)}>⬇ Download page</button>{/if}
               {#each info.info.links as l}<button class="btn small ghost" onclick={() => api.open(l)}>↗ {l.replace(/^https?:\/\/(www\.)?/, "").slice(0, 48)}</button>{/each}
             </div>
           {/if}
@@ -167,7 +176,7 @@
         {/if}
       </div>
       {#if game.kind !== "Steam" && info}
-        <Gallery {game} shots={info.screenshots} online={status.shelf_online} onchanged={loadInfo} />
+        <Gallery {game} shots={info.screenshots} page={info.info.page} online={status.shelf_online} onchanged={loadInfo} />
       {/if}
       <div class="cards">
         <div class="box">
@@ -198,6 +207,19 @@
             {/if}
           </dl>
         </div>
+        {#if game.kind !== "Steam"}
+          <div class="box">
+            <h4>Files</h4>
+            <p class="muted small">Verify checks every file against its fingerprint, on the shelf and on this PC, and repairs the PC copy. The first time, it records the fingerprints.</p>
+            <div class="row">
+              <button class="btn small" disabled={busy || !status.shelf_online} onclick={() => run(api.verify(game.id))}>✔ Verify</button>
+              <button class="btn small" disabled={!info?.info?.download} title={info?.info?.download ? "" : "Add a download link under About > Edit"}
+                onclick={async () => { updateMsg = "Checking…"; try { updateMsg = await api.checkUpdate(game.id); } catch (e) { updateMsg = String(e); } }}>⟳ Check for update</button>
+              <button class="btn small" disabled={busy || !status.shelf_online || !info?.info?.download} onclick={() => (redl = { version: "" })}>⬇ Re-download…</button>
+            </div>
+            {#if updateMsg}<p class="small note">{updateMsg}</p>{/if}
+          </div>
+        {/if}
       </div>
     {:else if tab === "art"}
       <p class="muted">Pictures are kept on the shelf, so every PC gets them, and copied into Steam's library too (Steam shows them after it restarts).</p>
@@ -234,6 +256,27 @@
   </div>
 </div>
 
+{#if redl}
+  <div class="overlay" role="presentation" onclick={(e) => e.target === e.currentTarget && (redl = null)}>
+    <div class="modal small">
+      <header><h2>Download {game.name} again</h2></header>
+      <div class="body">
+        <p class="muted mono">{info?.info?.download}</p>
+        <label class="radio"><input type="radio" name="how" checked={!redl.asVersion} onchange={() => (redl.asVersion = false)} /> <span><b>Replace the shelf copy</b><br /><span class="faint">For a damaged copy. The old one is kept until the new one is in place; saves stay. The copy on this PC is removed (saves backed up first) and copied fresh on the next Play.</span></span></label>
+        <label class="radio"><input type="radio" name="how" checked={redl.asVersion} onchange={() => (redl.asVersion = true)} /> <span><b>Add as a new version</b><br /><span class="faint">For an update: keeps this one, adds the download beside it.</span></span></label>
+        {#if redl.asVersion}
+          <label class="field"><span>Version name</span><input class="input" bind:value={redl.version} placeholder="e.g. V 0.8" /></label>
+        {/if}
+        <p class="faint small">MEGA links need megatools (sudo pacman -S megatools). Links that open a web page (MediaFire, forum pages) must be downloaded in the browser and added with Add game.</p>
+      </div>
+      <footer>
+        <button class="btn" onclick={() => (redl = null)}>Cancel</button>
+        <button class="btn primary" disabled={redl.asVersion && !redl.version.trim()} onclick={() => { run(api.redownload(game.id, redl.asVersion ? redl.version.trim() : null)); redl = null; }}>Download</button>
+      </footer>
+    </div>
+  </div>
+{/if}
+
 {#if moving}
   <Move {game} onclose={() => (moving = false)} onmoved={(id) => { moving = false; onmoved(id); }} />
 {/if}
@@ -242,6 +285,7 @@
   <ArtPicker
     {game}
     art={picking}
+    page={info?.info?.page ?? ""}
     {hasKey}
     {ondroptarget}
     onclose={() => { picking = null; ondroptarget(null); }}
@@ -264,6 +308,7 @@
   .logo { max-width: min(460px, 100%); max-height: 130px; object-fit: contain; filter: drop-shadow(0 6px 20px rgba(0, 0, 0, .6)); }
   h1 { margin: 0; font-size: 38px; line-height: 1.1; text-shadow: 0 4px 20px rgba(0, 0, 0, .6); }
   .meta { display: flex; flex-wrap: wrap; gap: 6px; margin: 14px 0 16px; }
+  .meta .pill.ver { color: #cfe2ff; border-color: rgba(75, 147, 255, .6); }
   .meta .pill { background: rgba(18, 29, 49, .75); backdrop-filter: blur(6px); }
   .buttons { display: flex; flex-wrap: wrap; gap: 10px; }
   .buttons .btn { padding: 10px 18px; }
@@ -274,6 +319,11 @@
   .tabs button.on { color: var(--text); border-color: var(--accent); }
   .content { padding: 22px 32px 40px; }
   .about { margin-bottom: 16px; }
+  .small { font-size: 12.5px; }
+  .note { margin: 10px 0 0; color: var(--text); }
+  .modal.small { width: min(560px, calc(100vw - 48px)); }
+  .radio { display: flex; gap: 10px; align-items: flex-start; padding: 10px 0; cursor: pointer; }
+  .radio input { margin-top: 4px; accent-color: var(--accent); }
   .about + :global(.box) { margin-bottom: 16px; }
   .head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
   .head h4 { margin: 0; }

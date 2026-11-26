@@ -111,6 +111,7 @@
 {#if adding !== null}
   <AddGame
     path={adding}
+    games={lib.games}
     online={status.shelf_online}
     onclose={() => { adding = null; dropTarget = null; }}
     ondroptarget={(f) => (dropTarget = f)}

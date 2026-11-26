@@ -38,11 +38,30 @@ pub fn launch(id: &str, command: &[String]) -> i32 {
         }
     }
 
+    let started = std::time::Instant::now();
     let res = match g.kind {
         Kind::Rom => launch::run_rom(&cfg, &db, &g),
         _ => launch::run_program(&cfg, &db, &g, command),
     };
+    let secs = started.elapsed().as_secs();
     match res {
+        // closed within seconds: almost always a crash; say so instead of nothing happening
+        Ok(rc) if secs < 15 && g.kind != Kind::Rom => {
+            let mut msg = format!("{} closed {secs} seconds after starting.", g.full_name());
+            match launch::log_summary(&g, 12) {
+                Some((path, lines)) => {
+                    if !lines.is_empty() {
+                        msg.push_str("\n\nFrom Proton's log:\n");
+                        msg.push_str(&lines.join("\n"));
+                    }
+                    msg.push_str(&format!("\n\nFull log: {}", path.display()));
+                }
+                None => msg.push_str("\n\nNo Proton log was written: the game may be a Linux game, or Proton didn't start."),
+            }
+            msg.push_str("\n\nTry another Proton version: Steam > the game > Properties > Compatibility.");
+            show_error("The game closed right away", &msg);
+            rc
+        }
         Ok(rc) => rc,
         Err(e) => show_error(&format!("Can't start {}", g.name), &format!("{e:#}")),
     }
@@ -167,7 +186,7 @@ pub fn show_error(title: &str, msg: &str) -> i32 {
     eprintln!("steam-fan: {title}: {msg}");
     let (t, m) = (title.to_string(), msg.to_string());
     let opts = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([440.0, 150.0]).with_app_id("steam-fan")
+        viewport: egui::ViewportBuilder::default().with_inner_size([if msg.len() > 200 { 760.0 } else { 440.0 }, if msg.len() > 200 { 420.0 } else { 150.0 }]).with_app_id("steam-fan")
             .with_icon(crate::util::icon()).with_title(&t),
         ..Default::default()
     };
@@ -184,7 +203,10 @@ impl eframe::App for ErrorBox {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading(&self.0);
             ui.add_space(6.0);
-            ui.label(&self.1);
+            egui::ScrollArea::vertical().max_height(ui.available_height() - 40.0).show(ui, |ui| {
+                let mut text = self.1.clone();
+                ui.add(egui::TextEdit::multiline(&mut text).desired_width(f32::INFINITY).font(egui::TextStyle::Monospace).interactive(true));
+            });
             ui.add_space(8.0);
             if ui.button("Close").clicked() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);

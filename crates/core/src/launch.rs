@@ -36,15 +36,45 @@ pub fn find_game(cfg: &Config, db: &mut Db, id: &str) -> Result<Game> {
     bail!("{id} isn't on the shelf (or the shelf isn't reachable)")
 }
 
-/// Is something running from this folder?
+/// Where Proton's log of a game's last run is kept.
+pub fn log_dir(g: &Game) -> std::path::PathBuf {
+    crate::config::data_dir().join("logs").join(format!("{:08x}", crc32fast::hash(g.id.as_bytes())))
+}
+
+/// The lines of the last Proton log that say what went wrong (errors, crashes), at most `n`.
+pub fn log_summary(g: &Game, n: usize) -> Option<(std::path::PathBuf, Vec<String>)> {
+    let newest = std::fs::read_dir(log_dir(g)).ok()?.flatten().max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())?.path();
+    let text = String::from_utf8_lossy(&std::fs::read(&newest).ok()?).into_owned();
+    let interesting = |l: &str| {
+        let low = l.to_lowercase();
+        (low.contains("err:") || low.contains("unhandled exception") || low.contains("page fault") || low.contains("could not load") || low.contains("not found") || low.contains("fatal"))
+            && !low.contains("xalia")
+    };
+    let mut lines: Vec<String> = text.lines().filter(|l| interesting(l)).map(|l| l.chars().take(220).collect()).collect();
+    lines.dedup();
+    let keep = lines.split_off(lines.len().saturating_sub(n));
+    Some((newest, keep))
+}
+
+/// Is the game running from this folder? Looks for programs started from it (also through
+/// Proton, which names them `Z:\\home\\...`) or working in it. Shells are ignored: a terminal
+/// that merely mentions the folder isn't the game.
 pub fn game_running(dir: &Path) -> bool {
-    let needle = dir.to_string_lossy().into_owned();
+    let unix = dir.to_string_lossy().into_owned();
+    let windows = format!("Z:{}", unix.replace('/', "\\")).to_lowercase();
     let Ok(rd) = std::fs::read_dir("/proc") else { return false };
     let me = std::process::id().to_string();
     rd.flatten().filter(|e| e.file_name().to_string_lossy() != me).any(|e| {
-        std::fs::read(e.path().join("cmdline"))
-            .map(|c| String::from_utf8_lossy(&c).replace('\0', " ").contains(&needle))
-            .unwrap_or(false)
+        let comm = std::fs::read_to_string(e.path().join("comm")).unwrap_or_default();
+        if matches!(comm.trim(), "bash" | "zsh" | "sh" | "fish" | "dash" | "python3" | "steam-fan" | "steam-fan-app") {
+            return false;
+        }
+        let in_dir = std::fs::read_link(e.path().join("cwd")).map_or(false, |c| c.starts_with(dir));
+        in_dir
+            || std::fs::read(e.path().join("cmdline")).map_or(false, |c| {
+                let c = String::from_utf8_lossy(&c).replace('\0', " ");
+                c.contains(&unix) || c.to_lowercase().contains(&windows)
+            })
     })
 }
 
@@ -52,6 +82,12 @@ pub fn game_running(dir: &Path) -> bool {
 pub fn run_program(cfg: &Config, db: &Db, g: &Game, cmd: &[String]) -> Result<i32> {
     if cmd.is_empty() {
         bail!("Steam passed no command; the launch options must end with %command%");
+    }
+    if cmd.len() == 1 && cmd[0] == "%command%" {
+        bail!(
+            "this line only works when Steam runs it: Steam replaces %command% with the command that starts \
+             the game through Proton. To start the game, press Play in Steam (or in Steam-Fan)."
+        );
     }
     let local = g.local_path(cfg);
     let mut restore_after = false;
@@ -77,11 +113,20 @@ pub fn run_program(cfg: &Config, db: &Db, g: &Game, cmd: &[String]) -> Result<i3
     // next to themselves (GameMaker, ...) couldn't find them.
     let exe = local.join(&g.program);
     let dir = if exe.is_file() { exe.parent().map(Path::to_path_buf).unwrap_or(local.clone()) } else { local.clone() };
-    let status = Command::new(&cmd[0])
-        .args(&cmd[1..])
-        .current_dir(&dir)
-        .status()
-        .with_context(|| format!("cannot start {}", cmd[0]))?;
+    // Proton writes what went wrong into a log; keep the last run of each game
+    let mut command = Command::new(&cmd[0]);
+    command.args(&cmd[1..]).current_dir(&dir);
+    if std::env::var_os("PROTON_LOG").is_none() {
+        let logdir = log_dir(g);
+        let _ = std::fs::create_dir_all(&logdir);
+        if let Ok(rd) = std::fs::read_dir(&logdir) {
+            for e in rd.flatten() {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+        command.env("PROTON_LOG", "1").env("PROTON_LOG_DIR", &logdir);
+    }
+    let status = command.status().with_context(|| format!("cannot start {}", cmd[0]))?;
     let rc = status.code().unwrap_or(1);
     db.log(&g.id, &format!("exited ({rc})"));
 

@@ -2,7 +2,8 @@
   import { onMount } from "svelte";
   import { api, pickFile, human } from "./api.js";
 
-  let { path, online, onclose, ondroptarget } = $props();
+  let { path, games = [], online, onclose, ondroptarget } = $props();
+  let version = $state("");
 
   let found = $state(null); // what inspect found
   let kind = $state("Fan");
@@ -18,6 +19,17 @@
     { id: "Rom", label: "Emulator game", key: "rom", help: "A game for Wii, Wii U, Switch…" },
   ];
   const suggestions = $derived(groups[kinds.find((k) => k.id === kind)?.key] ?? []);
+  // games already in the chosen group: picking one adds this as another version of it
+  const inGroup = $derived(
+    games.filter((g) => g.kind === kind && kind !== "Rom" && g.id.slice(g.id.indexOf(":") + 1).startsWith(group.trim() + "/")),
+  );
+  const titles = $derived([...new Set(inGroup.map((g) => g.name))].sort((a, b) => a.localeCompare(b)));
+  const versionsOf = $derived(inGroup.filter((g) => g.name === name.trim()));
+  const folder = { Fan: "fangames", NonSteam: "nonsteam", Rom: "roms" };
+  const target = $derived(
+    kind === "Rom" ? `roms/${group.trim() || "…"}/…/${name.trim() || "…"}`
+      : [folder[kind], group.trim() || "…", name.trim() || "…", version.trim()].filter(Boolean).join("/"),
+  );
 
   async function inspect(p) {
     if (!p) return;
@@ -39,7 +51,7 @@
   async function add() {
     error = "";
     try {
-      await api.importPlace(found.source, kind, group.trim(), name.trim());
+      await api.importPlace(found.source, kind, group.trim(), name.trim(), kind === "Rom" ? "" : version.trim());
       onclose();
     } catch (e) {
       error = String(e);
@@ -99,7 +111,8 @@
           </label>
           <label class="field">
             <span>Name</span>
-            <input class="input" bind:value={name} />
+            <input class="input" list="titles" bind:value={name} />
+            <datalist id="titles">{#each titles as t}<option value={t}></option>{/each}</datalist>
           </label>
         </div>
         {#if suggestions.length}
@@ -109,6 +122,16 @@
             {/each}
           </div>
         {/if}
+        {#if kind !== "Rom"}
+          <label class="field version">
+            <span>Version <i class="faint">(optional)</i></span>
+            <input class="input" bind:value={version} placeholder="e.g. V 0.6: keeps several versions of this game side by side" />
+          </label>
+          {#if versionsOf.length}
+            <p class="faint small">Already on the shelf: {versionsOf.map((g) => g.version || "without a version").join(", ")}{versionsOf.some((g) => !g.version) ? ". Give that one a version first (Move / Rename), or use another name." : ""}</p>
+          {/if}
+        {/if}
+        <p class="faint small">Goes to <span class="mono">{target}</span></p>
 
         {#if found.found.length}
           <p class="muted small">{kind === "Rom" ? "Game file" : "Program"} found: <span class="mono">{found.found.join(", ")}</span></p>
@@ -142,6 +165,7 @@
   .kind span { font-size: 12px; color: var(--faint); }
   .kind.on { border-color: var(--accent); background: rgba(75, 147, 255, .12); box-shadow: 0 0 0 3px rgba(75, 147, 255, .12); }
   .fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .version { margin-top: 12px; }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
   .chip { padding: 4px 10px; border-radius: 99px; border: 1px solid var(--line-2); background: var(--bg-2); color: var(--muted); cursor: pointer; font-size: 12px; }
   .chip.on { border-color: var(--accent); color: var(--text); }

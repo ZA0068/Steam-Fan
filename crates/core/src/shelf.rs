@@ -85,6 +85,10 @@ pub struct Game {
     /// Emulator system folder name, for ROMs.
     pub system: String,
     pub name: String,
+    /// Which version, when a game is kept in several versions side by side
+    /// (`Sonic of the Ring/V 0.6`). Empty for most games.
+    #[serde(default)]
+    pub version: String,
     /// Group shown as a Steam tag: Sonic The Hedgehog, wii, ...
     pub group: String,
     /// What starts the game, relative to the game folder (exe, rom file). Empty: not found yet.
@@ -98,6 +102,11 @@ pub struct Game {
 }
 
 impl Game {
+    /// The name with its version: `Sonic of the Ring (V 0.6)`.
+    pub fn full_name(&self) -> String {
+        if self.version.is_empty() { self.name.clone() } else { format!("{} ({})", self.name, self.version) }
+    }
+
     pub fn make_id(kind: Kind, system: &str, rel: &str) -> String {
         match kind {
             Kind::Rom => format!("rom:{system}/{rel}"),
@@ -179,7 +188,7 @@ pub fn listing(path: &Path) -> std::io::Result<Vec<Entry>> {
         .flatten()
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') || SKIP.contains(&name.as_str()) {
+            if (name.starts_with('.') && name != VERSIONS_MARKER) || SKIP.contains(&name.as_str()) {
                 return None;
             }
             let ft = e.file_type().ok()?;
@@ -257,6 +266,30 @@ pub fn is_game_folder(path: &Path, items: &[Entry]) -> bool {
         return true;
     }
     with_prog.len() < 2
+}
+
+/// A folder that holds versions of one game, not a group of games: it has the
+/// marker file (written when a version is added in the app), or every subfolder
+/// is named like a version (`0.2.5`, `V 0.6`, `v96`, `Beta 2`) and there's no program beside them.
+pub const VERSIONS_MARKER: &str = ".steam-fan-versions";
+
+pub fn is_version_name(n: &str) -> bool {
+    static R: OnceLock<Regex> = OnceLock::new();
+    R.get_or_init(|| {
+        Regex::new(r"(?i)^((v|ver|version)\s*\.?\s*)?\d+([._]\d+)*\s*[a-z]?$|^(alpha|beta|demo|build|release|rc|update|patch|final)\b|\b(alpha|beta|build|release|update|patch)\s*\d")
+            .unwrap()
+    })
+    .is_match(n.trim())
+}
+
+pub fn holds_versions(items: &[Entry]) -> bool {
+    if items.iter().any(|e| e.is_file && e.name == VERSIONS_MARKER) {
+        return true;
+    }
+    let dirs: Vec<&Entry> = items.iter().filter(|e| e.is_dir).collect();
+    dirs.len() >= 2
+        && dirs.iter().all(|d| is_version_name(&d.name))
+        && !items.iter().any(|e| e.is_file && is_program(&e.name))
 }
 
 fn norm(s: &str) -> String {
@@ -369,6 +402,7 @@ fn blank(kind: Kind, system: &str, rel: String, name: String, group: String) -> 
         rel,
         system: system.to_string(),
         name,
+        version: String::new(),
         group,
         program: String::new(),
         platform: match kind {
@@ -404,7 +438,15 @@ pub fn read_program_group(shelf: &Path, kind: Kind, group: &str) -> std::io::Res
             continue;
         }
         let items = listing(&epath)?;
-        if is_game_folder(&epath, &items) {
+        if holds_versions(&items) {
+            // Sonic of the Ring/{0.2.5, V 0.5, V 0.6}: one game, several versions
+            subgroups.push((e.name.clone(), mtime(&epath)));
+            for v in items.iter().filter(|v| v.is_dir) {
+                let mut g = blank(kind, "", format!("{group}/{}/{}", e.name, v.name), e.name.clone(), group.into());
+                g.version = v.name.clone();
+                games.push(g);
+            }
+        } else if is_game_folder(&epath, &items) {
             games.push(blank(kind, "", format!("{group}/{}", e.name), e.name.clone(), group.into()));
         } else {
             subgroups.push((e.name.clone(), mtime(&epath)));
@@ -546,6 +588,11 @@ mod tests {
         touch(&f.join("Others/readme.txt"));
         touch(&f.join("Phantasy Star/super-phantasy-fighters-windows/UnityCrashHandler64.exe"));
         touch(&f.join("Phantasy Star/super-phantasy-fighters-windows/SPF.exe"));
+        touch(&f.join("Sonic The Hedgehog/Sonic of the Ring/0.2.5/sotr.exe"));
+        touch(&f.join("Sonic The Hedgehog/Sonic of the Ring/V 0.6/sotr.exe"));
+        touch(&f.join("Sonic The Hedgehog/Sonic Network Land v96/Sonic Network Land.exe"));
+        touch(&f.join("Sonic The Hedgehog/Sonic Worlds/.steam-fan-versions"));
+        touch(&f.join("Sonic The Hedgehog/Sonic Worlds/Delta/sw.exe"));
         let mut all = vec![];
         for g in ["Super Mario Bros", "Sonic The Hedgehog", "Others", "Phantasy Star"] {
             all.extend(read_program_group(s, Kind::Fan, g).unwrap().games);
@@ -556,13 +603,27 @@ mod tests {
             [
                 "fan:Super Mario Bros/Super Mario 63",
                 "fan:Sonic The Hedgehog/Sonic Classic",
+                "fan:Sonic The Hedgehog/Sonic Network Land v96",
+                "fan:Sonic The Hedgehog/Sonic of the Ring/0.2.5",
+                "fan:Sonic The Hedgehog/Sonic of the Ring/V 0.6",
+                "fan:Sonic The Hedgehog/Sonic Worlds/Delta",
                 "fan:Others/Pack/A",
                 "fan:Others/Pack/B",
                 "fan:Others/Solo.exe",
                 "fan:Phantasy Star/super-phantasy-fighters-windows",
             ]
         );
-        assert_eq!(all[2].group, "Pack");
+        let sotr = &all[3];
+        assert_eq!((sotr.name.as_str(), sotr.version.as_str(), sotr.group.as_str()), ("Sonic of the Ring", "0.2.5", "Sonic The Hedgehog"));
+        assert_eq!(all[4].full_name(), "Sonic of the Ring (V 0.6)");
+        assert_eq!(all[5].version, "Delta", "marker file: versions even with one");
+        assert_eq!(all[6].group, "Pack");
+        for v in ["0.2.5", "V 0.6", "v96", "Beta 2", "1.4.2b"] {
+            assert!(is_version_name(v), "{v}");
+        }
+        for v in ["Sonic Classic", "Pack", "Delta"] {
+            assert!(!is_version_name(v), "{v}");
+        }
         assert_eq!(
             pick_program(&f.join("Sonic The Hedgehog/Sonic Classic"), "Sonic Classic").unwrap().0,
             "bin/sonic.exe"
