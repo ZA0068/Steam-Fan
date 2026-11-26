@@ -193,6 +193,9 @@ pub fn mirror(cfg: &Config, g: &Game) -> bool {
             None => {}
         }
     }
+    if mirror_extras(cfg, g) {
+        changed = true;
+    }
     changed
 }
 
@@ -341,7 +344,7 @@ fn sgdb_get<T: for<'de> Deserialize<'de>>(path: &str, query: &[(&str, &str)]) ->
         Ok(r) => r.into_json()?,
         Err(ureq::Error::Status(401, _)) => bail!("SteamGridDB refused the API key"),
         Err(ureq::Error::Status(404, _)) => bail!("not found on SteamGridDB"),
-        Err(e) => return Err(e).context("cannot reach SteamGridDB"),
+        Err(_) => bail!("cannot reach SteamGridDB (is the internet connection up?)"),
     };
     if !r.success {
         bail!("SteamGridDB: {}", r.errors.join(", "));
@@ -510,4 +513,142 @@ mod tests {
         store(&cfg, &g, Art::Cover, &bmp.into_inner()).unwrap();
         assert!(on_shelf(&cfg, &g, Art::Cover).unwrap().ends_with("artwork/fangames/G/Game/cover.png"));
     }
+}
+
+
+// ---------------------------------------------------------------- thumbnails
+
+/// A small copy of the cover for the library grid (about 300 px wide), made on first use.
+/// Full covers are often 1 MB each; hundreds of them make scrolling slow.
+pub fn thumb(g: &Game) -> Option<PathBuf> {
+    let cover = local(g, Art::Cover)?;
+    let out = cache_dir(g).join("cover-thumb.jpg");
+    let fresh = match (fs::metadata(&cover), fs::metadata(&out)) {
+        (Ok(c), Ok(t)) => t.modified().ok() >= c.modified().ok(),
+        _ => false,
+    };
+    if !fresh {
+        let img = image::open(&cover).ok()?;
+        let small = img.resize(320, 480, image::imageops::FilterType::Triangle).to_rgb8();
+        let mut f = fs::File::create(&out).ok()?;
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut f, 85).encode_image(&small).ok()?;
+    }
+    Some(out)
+}
+
+// ---------------------------------------------------------------- about the game
+
+/// What a game is about, kept on the shelf in `artwork/<game>/info.toml`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Info {
+    pub description: String,
+    pub developer: String,
+    pub released: String,
+    /// Web pages: SFGHQ, the game's site, a video...
+    pub links: Vec<String>,
+}
+
+/// The info on this PC (copied from the shelf), or empty.
+pub fn info(g: &Game) -> Info {
+    fs::read_to_string(cache_dir(g).join("info.toml")).ok().and_then(|s| toml::from_str(&s).ok()).unwrap_or_default()
+}
+
+pub fn save_info(cfg: &Config, g: &Game, info: &Info) -> Result<()> {
+    if !cfg.shelf_online() {
+        bail!("the shelf isn't reachable");
+    }
+    let text = toml::to_string_pretty(info)?;
+    let dir = shelf_dir(cfg, g);
+    fs::create_dir_all(&dir)?;
+    fs::write(dir.join("info.toml"), &text)?;
+    fs::create_dir_all(cache_dir(g))?;
+    fs::write(cache_dir(g).join("info.toml"), &text)?;
+    Ok(())
+}
+
+/// Screenshots on this PC (copied from the shelf), sorted by name.
+pub fn screenshots(g: &Game) -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> = pictures_in(&cache_dir(g).join("screenshots")).into_iter().map(|(_, p)| p).collect();
+    v.sort();
+    v
+}
+
+/// Add pictures as screenshots: on the shelf and on this PC. Returns how many were added.
+pub fn add_screenshots(cfg: &Config, g: &Game, files: &[PathBuf]) -> Result<usize> {
+    if !cfg.shelf_online() {
+        bail!("the shelf isn't reachable");
+    }
+    let dir = shelf_dir(cfg, g).join("screenshots");
+    let cache = cache_dir(g).join("screenshots");
+    fs::create_dir_all(&dir)?;
+    fs::create_dir_all(&cache)?;
+    let mut n = 0;
+    for f in files {
+        let bytes = fs::read(f).with_context(|| format!("cannot read {}", f.display()))?;
+        let fmt = image::guess_format(&bytes).with_context(|| format!("{} isn't a picture", f.display()))?;
+        let (data, ext) = match fmt {
+            image::ImageFormat::Png => (bytes, "png"),
+            image::ImageFormat::Jpeg => (bytes, "jpg"),
+            _ => {
+                let mut out = std::io::Cursor::new(Vec::new());
+                image::load_from_memory(&bytes)?.write_to(&mut out, image::ImageFormat::Png)?;
+                (out.into_inner(), "png")
+            }
+        };
+        // numbered names keep the order they were added in
+        let next = pictures_in(&dir).len() + 1;
+        let mut name = format!("{next:03}.{ext}");
+        let mut k = next;
+        while dir.join(&name).exists() {
+            k += 1;
+            name = format!("{k:03}.{ext}");
+        }
+        fs::write(dir.join(&name), &data)?;
+        fs::write(cache.join(&name), &data)?;
+        n += 1;
+    }
+    Ok(n)
+}
+
+pub fn remove_screenshot(cfg: &Config, g: &Game, name: &str) -> Result<()> {
+    if name.contains('/') || name.contains("..") {
+        bail!("bad name");
+    }
+    let _ = fs::remove_file(shelf_dir(cfg, g).join("screenshots").join(name));
+    let _ = fs::remove_file(cache_dir(g).join("screenshots").join(name));
+    Ok(())
+}
+
+/// Copy screenshots and info from the shelf. True if anything changed.
+fn mirror_extras(cfg: &Config, g: &Game) -> bool {
+    let mut changed = false;
+    let sdir = shelf_dir(cfg, g);
+    let info_src = sdir.join("info.toml");
+    let info_dst = cache_dir(g).join("info.toml");
+    if info_src.is_file() && !same_file(&info_src, &info_dst) && fs::copy(&info_src, &info_dst).is_ok() {
+        changed = true;
+    }
+    let shots = pictures_in(&sdir.join("screenshots"));
+    let cache = cache_dir(g).join("screenshots");
+    let have: Vec<String> = pictures_in(&cache).into_iter().map(|(_, p)| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
+    if !shots.is_empty() {
+        let _ = fs::create_dir_all(&cache);
+    }
+    let names: Vec<String> = shots.iter().map(|(_, p)| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
+    for (_, p) in &shots {
+        let dst = cache.join(p.file_name().unwrap());
+        if !same_file(p, &dst) && fs::copy(p, &dst).is_ok() {
+            changed = true;
+        }
+    }
+    // removed on the shelf (from another PC): remove here too
+    let listed = listing(&sdir.join("screenshots")).is_ok();
+    for h in have {
+        if listed && !names.contains(&h) {
+            let _ = fs::remove_file(cache.join(&h));
+            changed = true;
+        }
+    }
+    changed
 }

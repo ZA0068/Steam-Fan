@@ -48,7 +48,7 @@
 
   onMount(async () => {
     groups = (await api.groups()) ?? {};
-    ondroptarget((p) => inspect(p));
+    ondroptarget((ps) => inspect(ps[0]));
     if (path) inspect(path);
     return () => ondroptarget(null);
   });

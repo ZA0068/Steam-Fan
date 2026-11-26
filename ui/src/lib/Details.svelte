@@ -2,8 +2,12 @@
   import { api, human } from "./api.js";
   import Cover from "./Cover.svelte";
   import ArtPicker from "./ArtPicker.svelte";
+  import Gallery from "./Gallery.svelte";
+  import Move from "./Move.svelte";
 
-  let { game, status, busy, hasKey, onback, ondroptarget, onchanged } = $props();
+  let { game, status, busy, hasKey, onback, ondroptarget, onchanged, onmoved } = $props();
+  let moving = $state(false);
+  let editing = $state(null); // a copy of the info while it's being edited
   let info = $state(null);
   let tab = $state("overview");
   let picking = $state(null); // which picture is being chosen
@@ -20,6 +24,25 @@
     game.id;
     loadInfo();
   });
+  // pictures dropped on this page become screenshots (the artwork picker takes over while open)
+  $effect(() => {
+    if (picking || moving || game.kind === "Steam") return;
+    ondroptarget(async (paths) => {
+      const pics = paths.filter((p) => /\.(png|jpe?g|webp|bmp|gif)$/i.test(p));
+      if (!pics.length) return;
+      await run(api.screenshotsAdd(game.id, pics));
+      loadInfo();
+    });
+    return () => ondroptarget(null);
+  });
+  async function saveInfo() {
+    const i = $state.snapshot(editing);
+    i.links = (i.linksText ?? "").split("\n").map((l) => l.trim()).filter(Boolean);
+    delete i.linksText;
+    await run(api.infoSave(game.id, i));
+    editing = null;
+    loadInfo();
+  }
 
   async function run(p) {
     error = "";
@@ -91,6 +114,9 @@
           {:else}
             <button class="btn" disabled={busy || !status.shelf_online || !game.playable} onclick={() => run(api.install(game.id))}>⬇ Copy to this PC</button>
           {/if}
+          {#if game.kind !== "Steam"}
+            <button class="btn" disabled={busy || !status.shelf_online} onclick={() => (moving = true)} title="Move it to another group, or rename it">✎ Move / Rename</button>
+          {/if}
         </div>
         {#if error}<p class="error">{error}</p>{/if}
       </div>
@@ -105,6 +131,44 @@
 
   <div class="content">
     {#if tab === "overview"}
+      <div class="box about">
+        <div class="head">
+          <h4>About</h4>
+          {#if game.kind !== "Steam" && !editing}
+            <button class="btn small" disabled={!status.shelf_online || !info} onclick={() => (editing = { ...info.info, linksText: info.info.links.join("\n") })}>Edit</button>
+          {/if}
+        </div>
+        {#if editing}
+          <div class="edit">
+            <label class="field"><span>Description</span><textarea class="input" rows="5" bind:value={editing.description} placeholder="What is this game about?"></textarea></label>
+            <div class="two">
+              <label class="field"><span>Made by</span><input class="input" bind:value={editing.developer} /></label>
+              <label class="field"><span>Released</span><input class="input" bind:value={editing.released} placeholder="2024, or SAGE 2025" /></label>
+            </div>
+            <label class="field"><span>Links (one per line: SFGHQ page, website, video…)</span><textarea class="input mono" rows="3" bind:value={editing.linksText}></textarea></label>
+            <div class="row">
+              <button class="btn primary small" onclick={saveInfo}>Save</button>
+              <button class="btn small" onclick={() => (editing = null)}>Cancel</button>
+            </div>
+          </div>
+        {:else if info?.info?.description || info?.info?.developer || info?.info?.links?.length}
+          {#if info.info.description}<p class="desc">{info.info.description}</p>{/if}
+          <div class="facts">
+            {#if info.info.developer}<span><span class="faint">Made by</span> {info.info.developer}</span>{/if}
+            {#if info.info.released}<span><span class="faint">Released</span> {info.info.released}</span>{/if}
+          </div>
+          {#if info.info.links.length}
+            <div class="row links">
+              {#each info.info.links as l}<button class="btn small ghost" onclick={() => api.open(l)}>↗ {l.replace(/^https?:\/\/(www\.)?/, "").slice(0, 48)}</button>{/each}
+            </div>
+          {/if}
+        {:else}
+          <p class="muted">{game.kind === "Steam" ? "Steam shows this game's description on its store page." : "No description yet. Press Edit to say what this game is, who made it, and where it's from."}</p>
+        {/if}
+      </div>
+      {#if game.kind !== "Steam" && info}
+        <Gallery {game} shots={info.screenshots} online={status.shelf_online} onchanged={loadInfo} />
+      {/if}
       <div class="cards">
         <div class="box">
           <h4>Where it is</h4>
@@ -170,6 +234,10 @@
   </div>
 </div>
 
+{#if moving}
+  <Move {game} onclose={() => (moving = false)} onmoved={(id) => { moving = false; onmoved(id); }} />
+{/if}
+
 {#if picking}
   <ArtPicker
     {game}
@@ -205,7 +273,16 @@
   .tabs button { padding: 12px 16px; border: 0; background: none; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; }
   .tabs button.on { color: var(--text); border-color: var(--accent); }
   .content { padding: 22px 32px 40px; }
-  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+  .about { margin-bottom: 16px; }
+  .about + :global(.box) { margin-bottom: 16px; }
+  .head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+  .head h4 { margin: 0; }
+  .desc { white-space: pre-wrap; line-height: 1.55; margin: 0 0 12px; user-select: text; max-width: 900px; }
+  .facts { display: flex; gap: 22px; flex-wrap: wrap; font-size: 13px; }
+  .links { margin-top: 10px; }
+  .edit { display: grid; gap: 12px; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .cards { margin-top: 16px; display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
   .box { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px; }
   h4 { margin: 0 0 12px; font-size: 13px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); }
   dl { display: grid; grid-template-columns: 90px 1fr; gap: 8px 12px; margin: 0 0 12px; }

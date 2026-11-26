@@ -48,7 +48,7 @@
         (paths) => {
           dragging = false;
           if (!paths?.length) return;
-          if (dropTarget) dropTarget(paths[0]);
+          if (dropTarget) dropTarget(paths);
           else adding = paths[0];
         },
         (h) => (dragging = h),
@@ -90,6 +90,7 @@
         onback={() => (selected = null)}
         ondroptarget={(f) => (dropTarget = f)}
         onchanged={load}
+        onmoved={async (id) => { await load(); selected = id; }}
       />
     {:else}
       <Library

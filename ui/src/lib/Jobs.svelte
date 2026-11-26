@@ -50,7 +50,7 @@
   .x { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 12px; }
   .bar { height: 6px; border-radius: 6px; background: var(--bg-2); margin: 10px 0 6px; overflow: hidden; }
   .bar div { height: 100%; background: linear-gradient(90deg, var(--accent-2), var(--accent)); border-radius: 6px; transition: width .2s; }
-  .sub { font-size: 12px; color: var(--muted); margin-top: 4px; user-select: text; }
+  .sub { font-size: 12px; color: var(--muted); margin-top: 4px; user-select: text; overflow-wrap: anywhere; max-height: 7.5em; overflow: auto; }
   .ell { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .spin { width: 12px; height: 12px; border: 2px solid var(--line-2); border-top-color: var(--accent); border-radius: 50%; animation: s .8s linear infinite; }
   @keyframes s { to { transform: rotate(360deg); } }

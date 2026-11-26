@@ -34,6 +34,7 @@ impl Db {
                  id TEXT PRIMARY KEY, program TEXT NOT NULL, platform TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS art (
                  id TEXT PRIMARY KEY, sgdb_id INTEGER, checked TEXT NOT NULL DEFAULT (datetime('now')));
+             CREATE TABLE IF NOT EXISTS renames (old TEXT PRIMARY KEY, new TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS events (
                  ts TEXT NOT NULL DEFAULT (datetime('now','localtime')), game TEXT NOT NULL, msg TEXT NOT NULL);",
         )?;
@@ -50,6 +51,7 @@ impl Db {
             "CREATE TABLE groups (key TEXT PRIMARY KEY, scan TEXT NOT NULL);
              CREATE TABLE programs (id TEXT PRIMARY KEY, program TEXT NOT NULL, platform TEXT NOT NULL);
              CREATE TABLE art (id TEXT PRIMARY KEY, sgdb_id INTEGER, checked TEXT NOT NULL DEFAULT (datetime('now')));
+             CREATE TABLE renames (old TEXT PRIMARY KEY, new TEXT NOT NULL);
              CREATE TABLE events (ts TEXT NOT NULL DEFAULT (datetime('now','localtime')), game TEXT NOT NULL, msg TEXT NOT NULL);",
         )?;
         Ok(Db { conn })
@@ -140,6 +142,34 @@ impl Db {
              ON CONFLICT(id) DO UPDATE SET sgdb_id = excluded.sgdb_id, checked = datetime('now')",
             params![id, sgdb.map(|v| v as i64)],
         )?;
+        Ok(())
+    }
+
+    /// A game got a new id (moved or renamed): carry its program, artwork lookup and
+    /// history over, and remember the change so Steam's entry can follow it.
+    pub fn rename_game(&mut self, old: &str, new: &str) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM programs WHERE id = ?2", params![old, new])?;
+        tx.execute("UPDATE programs SET id = ?2 WHERE id = ?1", params![old, new])?;
+        tx.execute("DELETE FROM art WHERE id = ?2", params![old, new])?;
+        tx.execute("UPDATE art SET id = ?2 WHERE id = ?1", params![old, new])?;
+        tx.execute("UPDATE events SET game = ?2 WHERE game = ?1", params![old, new])?;
+        // a game renamed twice before Steam saw the first rename
+        tx.execute("UPDATE renames SET new = ?2 WHERE new = ?1", params![old, new])?;
+        tx.execute("INSERT OR REPLACE INTO renames (old, new) VALUES (?1, ?2)", params![old, new])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Renames Steam hasn't been told about yet (old id -> new id).
+    pub fn renames(&self) -> Result<HashMap<String, String>> {
+        let mut st = self.conn.prepare("SELECT old, new FROM renames")?;
+        let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    pub fn clear_renames(&self) -> Result<()> {
+        self.conn.execute("DELETE FROM renames", [])?;
         Ok(())
     }
 

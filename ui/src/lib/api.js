@@ -30,6 +30,11 @@ export const api = {
   importInspect: (path) => call("import_inspect", { path }),
   importPlace: (source, kind, group, name) => call("import_place", { source, kind, group, name }),
   groups: () => call("groups"),
+  infoSave: (id, info) => call("info_save", { id, info }),
+  screenshotsAdd: (id, paths) => call("screenshots_add", { id, paths }),
+  screenshotRemove: (id, name) => call("screenshot_remove", { id, name }),
+  relocate: (id, kind, group, name) => call("relocate", { id, kind, group, name }),
+  syncSteamRestart: () => call("sync_steam_restart"),
   settings: () => call("settings"),
   saveSettings: (config) => call("settings_save", { config }),
   setSecret: (name, value) => call("secret_set", { name, value }),
@@ -55,7 +60,7 @@ export async function onDrop(fn, onHover) {
   });
 }
 
-export async function pickFile({ images = false, archives = false, folder = false } = {}) {
+export async function pickFile({ images = false, archives = false, folder = false, multiple = false } = {}) {
   if (!inTauri) return null;
   const { open } = await import("@tauri-apps/plugin-dialog");
   const filters = images
@@ -63,7 +68,7 @@ export async function pickFile({ images = false, archives = false, folder = fals
     : archives
       ? [{ name: "Games and archives", extensions: ["zip", "7z", "rar", "tar", "gz", "xz", "zst", "exe", "iso", "wbfs", "rvz", "nsp", "xci", "wua", "wux", "appimage"] }]
       : undefined;
-  const r = await open({ directory: folder, multiple: false, filters });
+  const r = await open({ directory: folder, multiple, filters });
   return r || null;
 }
 

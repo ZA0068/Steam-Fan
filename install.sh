@@ -25,8 +25,13 @@ ICONS=$HOME/.local/share/icons/hicolor/scalable/apps
 mkdir -p "$BIN" "$APPS" "$ICONS"
 install -m 755 target/release/steam-fan "$BIN/steam-fan"
 install -m 755 target/release/steam-fan-app "$BIN/steam-fan-app"
-install -m 644 packaging/steam-fan.svg "$ICONS/steam-fan.svg"
-install -m 644 packaging/steam-fan.desktop "$APPS/steam-fan.desktop"
+# icon name without "steam-" in front: icon themes fall back from "steam-fan" to "steam"
+install -m 644 packaging/steam-fan.svg "$ICONS/dev.zain.steamfan.svg"
+rm -f "$ICONS/steam-fan.svg" "$APPS/steam-fan.desktop"
+# named like the window (steam-fan-app), so the taskbar matches window and entry
+install -m 644 packaging/steam-fan.desktop "$APPS/steam-fan-app.desktop"
+command -v update-desktop-database > /dev/null && update-desktop-database "$APPS" || true
+command -v gtk-update-icon-cache > /dev/null && gtk-update-icon-cache -q "$HOME/.local/share/icons/hicolor" 2> /dev/null || true
 echo "== Installed steam-fan, steam-fan-app and the Steam-Fan menu entry"
 
 if [[ ${1:-} != --no-steam-menu ]]; then

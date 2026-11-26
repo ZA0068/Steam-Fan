@@ -15,11 +15,11 @@
 </script>
 
 {#if game.art.cover && !broken}
-  <img class="cover {size}" src={game.art.cover} alt={game.name} loading="lazy" onerror={() => (broken = true)} />
+  <img class="cover {size}" src={size === "card" ? game.art.thumb ?? game.art.cover : game.art.cover} alt={game.name} loading="lazy" decoding="async" onerror={() => (broken = true)} />
 {:else}
   <div class="tile {size}" style="--h:{h}">
     {#if game.art.icon}
-      <img class="icon" src={game.art.icon} alt="" />
+      <img class="icon" src={game.art.icon} alt="" loading="lazy" decoding="async" />
     {:else}
       <span class="initials">{initials || "?"}</span>
     {/if}

@@ -103,10 +103,12 @@ pub fn is_installed(cfg: &Config, g: &Game) -> bool {
 pub fn self_exe() -> PathBuf {
     let installed = crate::config::home().join(".local/bin/steam-fan");
     if installed.exists() {
-        installed
-    } else {
-        std::env::current_exe().unwrap_or(installed)
+        return installed;
     }
+    // the window program (steam-fan-app) sits next to steam-fan, which is what Steam must run
+    let me = std::env::current_exe().unwrap_or_else(|_| installed.clone());
+    let beside = me.with_file_name("steam-fan");
+    if beside.exists() { beside } else { me }
 }
 
 /// The Steam library entry for a game.
@@ -183,7 +185,11 @@ pub fn sync_to_steam(
         }
     }
     let prune = only.is_empty() && refresh.complete && !list.is_empty();
-    let report = steam::sync_shortcuts(cfg, &list, prune, dry_run)?;
+    let renames = db.renames().unwrap_or_default();
+    let report = steam::sync_shortcuts_renamed(cfg, &list, &renames, prune, dry_run)?;
+    if !dry_run && !renames.is_empty() {
+        let _ = db.clear_renames();
+    }
     if !dry_run {
         // the pictures go into Steam's artwork folder too (Steam reads them when it starts)
         let ids = steam::shortcut_ids(cfg);
@@ -287,10 +293,26 @@ pub fn refresh_art(cfg: &Config, db: &Db, games: &[Game], fetch: bool, again: bo
     let online = cfg.shelf_online();
     let can_fetch = fetch && online && !artwork::sgdb_key().is_empty();
     let ids = steam::shortcut_ids(cfg);
+    // copying from the shelf waits on the network, not the CPU: do 8 games at a time
+    if online {
+        status("copying artwork from the shelf");
+        let copied = std::sync::atomic::AtomicUsize::new(0);
+        let chunk = games.len().div_ceil(8).max(1);
+        std::thread::scope(|sc| {
+            for part in games.chunks(chunk) {
+                let copied = &copied;
+                sc.spawn(move || {
+                    for g in part {
+                        if artwork::mirror(cfg, g) {
+                            copied.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
+                });
+            }
+        });
+        rep.copied = copied.into_inner();
+    }
     for g in games {
-        if online && artwork::mirror(cfg, g) {
-            rep.copied += 1;
-        }
         if can_fetch && g.kind != Kind::Steam && artwork::local(g, Art::Cover).is_none() {
             let known = db.art_lookup(&g.id);
             if again || known.is_none() {
@@ -323,4 +345,134 @@ pub fn refresh_art(cfg: &Config, db: &Db, games: &[Game], fetch: bool, again: bo
         }
     }
     rep
+}
+
+
+/// Move or rename a game on the shelf: its folder, its saves, its artwork, the copy
+/// on this PC, and its history all follow. Its Steam entry is kept (with its play
+/// time and artwork) and updated the next time Steam's library is updated.
+/// `group` may be "Group/Subgroup". Returns the game's new id.
+pub fn relocate(cfg: &Config, db: &mut Db, g: &Game, kind: Kind, group: &str, name: &str) -> Result<String> {
+    use crate::artwork;
+    use std::fs;
+    if g.kind == Kind::Steam || kind == Kind::Steam {
+        bail!("Steam games can't be moved");
+    }
+    if (g.kind == Kind::Rom) != (kind == Kind::Rom) {
+        bail!("an emulator game can only move to another emulator system, and other games can't become emulator games");
+    }
+    if !cfg.shelf_online() {
+        bail!("the shelf isn't reachable");
+    }
+    let clean = |s: &str| s.split('/').map(|p| p.trim().replace(['\\', ':'], "-")).filter(|p| !p.is_empty() && p != "." && p != "..").collect::<Vec<_>>().join("/");
+    let (group, mut name) = (clean(group), clean(name).replace('/', "-"));
+    if group.is_empty() || name.is_empty() {
+        bail!("give the game a name and a group");
+    }
+    let old_shelf = g.shelf_path(cfg);
+    // a single program file keeps its file type
+    if old_shelf.is_file() {
+        if let Some(ext) = old_shelf.extension() {
+            let ext = format!(".{}", ext.to_string_lossy());
+            if !name.to_lowercase().ends_with(&ext.to_lowercase()) {
+                name.push_str(&ext);
+            }
+        }
+    }
+    let (rel, system) = match kind {
+        Kind::Rom => (name.clone(), group.clone()),
+        _ => (format!("{group}/{name}"), String::new()),
+    };
+    let mut ng = g.clone();
+    ng.kind = kind;
+    ng.rel = rel.clone();
+    ng.system = system.clone();
+    ng.id = Game::make_id(kind, &system, &rel);
+    if ng.id == g.id {
+        return Ok(ng.id);
+    }
+    let new_shelf = ng.shelf_path(cfg);
+    if new_shelf.exists() {
+        bail!("{} already exists on the shelf", new_shelf.display());
+    }
+    let local_old = g.local_path(cfg);
+    if local_old.exists() && crate::launch::game_running(&local_old) {
+        bail!("{} seems to be running; quit it first", g.name);
+    }
+
+    let mv = |a: &Path, b: &Path| -> Result<()> {
+        if a.exists() {
+            fs::create_dir_all(b.parent().unwrap())?;
+            fs::rename(a, b).with_context(|| format!("cannot move {} to {}", a.display(), b.display()))?;
+        }
+        Ok(())
+    };
+    mv(&old_shelf, &new_shelf)?;
+    // emulator saves belong to the whole system, so they stay where they are
+    if kind != Kind::Rom {
+        mv(&g.save_path(cfg), &ng.save_path(cfg))?;
+    }
+    mv(&artwork::shelf_dir(cfg, g), &artwork::shelf_dir(cfg, &ng))?;
+    let _ = mv(&artwork::cache_dir(g), &artwork::cache_dir(&ng));
+    if local_old.exists() {
+        mv(&local_old, &ng.local_path(cfg))?;
+    }
+    // leave no empty group folders behind
+    for p in [old_shelf.parent(), local_old.parent()].into_iter().flatten() {
+        let _ = fs::remove_dir(p);
+    }
+    db.rename_game(&g.id, &ng.id)?;
+    db.log(&ng.id, &format!("moved from {}", g.id));
+    refresh(cfg, db, false, |_| {})?;
+    Ok(ng.id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn move_keeps_saves_art_and_steam_entry() {
+        let t = tempfile::tempdir().unwrap();
+        let r = t.path();
+        std::env::set_var("XDG_DATA_HOME", r.join("data"));
+        let s = |p: &str| r.join(p).to_string_lossy().into_owned();
+        fs::create_dir_all(r.join("shelf/fangames/Mario/SM63")).unwrap();
+        fs::write(r.join("shelf/fangames/Mario/SM63/sm63.exe"), b"MZ").unwrap();
+        fs::create_dir_all(r.join("shelf/saves/fangames/Mario/SM63/game")).unwrap();
+        fs::write(r.join("shelf/saves/fangames/Mario/SM63/game/save.dat"), b"1").unwrap();
+        fs::create_dir_all(r.join("steam/userdata/7/config")).unwrap();
+        let cfg = Config {
+            shelf: s("shelf"),
+            fan_local: s("pc/NonSteam"),
+            steam_root: s("steam"),
+            ..Default::default()
+        };
+        let mut db = Db::in_memory().unwrap();
+        let out = sync_to_steam(&cfg, &mut db, &[], false, false, |_| {}).unwrap();
+        assert_eq!(out.steam.added, ["fan:Mario/SM63"]);
+        let before = steam::shortcut_ids(&cfg)["fan:Mario/SM63"];
+        let g = db.games().unwrap().into_iter().find(|g| g.id == "fan:Mario/SM63").unwrap();
+        crate::artwork::store(&cfg, &g, crate::artwork::Art::Cover, &{
+            let mut b = std::io::Cursor::new(Vec::new());
+            image::RgbImage::new(2, 3).write_to(&mut b, image::ImageFormat::Png).unwrap();
+            b.into_inner()
+        })
+        .unwrap();
+
+        let new = relocate(&cfg, &mut db, &g, Kind::Fan, "Super Mario Bros", "Super Mario 63").unwrap();
+        assert_eq!(new, "fan:Super Mario Bros/Super Mario 63");
+        assert!(r.join("shelf/fangames/Super Mario Bros/Super Mario 63/sm63.exe").exists());
+        assert!(!r.join("shelf/fangames/Mario").exists(), "empty old group removed");
+        assert!(r.join("shelf/saves/fangames/Super Mario Bros/Super Mario 63/game/save.dat").exists());
+        assert!(r.join("shelf/artwork/fangames/Super Mario Bros/Super Mario 63/cover.png").exists());
+        assert_eq!(db.programs().unwrap()[&new].0, "sm63.exe");
+
+        // Steam keeps the same entry (same id, so play time and artwork stay)
+        let out = sync_to_steam(&cfg, &mut db, &[], false, false, |_| {}).unwrap();
+        assert!(out.steam.added.is_empty() && out.steam.removed.is_empty(), "{out:?}");
+        assert_eq!(steam::shortcut_ids(&cfg)[&new], before);
+        assert!(db.renames().unwrap().is_empty());
+    }
 }

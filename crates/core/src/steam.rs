@@ -137,8 +137,13 @@ impl SyncReport {
 
 /// Find the game id in an entry's launch options, also for entries made by the old scripts.
 pub fn id_from_launch(opts: &str) -> Option<String> {
-    if opts.contains("steam-fan") {
-        return first_quoted_after(opts, " launch");
+    if opts.contains(" launch ") {
+        // "<steam-fan>" launch "<kind>:<path>" ...
+        if let Some(id) = first_quoted_after(opts, " launch") {
+            if ["fan:", "nonsteam:", "rom:"].iter().any(|k| id.starts_with(k)) {
+                return Some(id);
+            }
+        }
     }
     if opts.contains("fan-fetch") {
         // made by the old fan-sync script: "fan-fetch" "<rel>" %command%
@@ -211,6 +216,18 @@ fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
 /// `prune`, those whose game is no longer wanted are removed; pass `false`
 /// unless `wanted` is the complete list from a full shelf read.
 pub fn sync_shortcuts(cfg: &Config, wanted: &[Wanted], prune: bool, dry_run: bool) -> Result<SyncReport> {
+    sync_shortcuts_renamed(cfg, wanted, &std::collections::HashMap::new(), prune, dry_run)
+}
+
+/// Like `sync_shortcuts`, but entries for games that were moved or renamed
+/// (old id -> new id) are kept and updated, so Steam keeps their play time and artwork.
+pub fn sync_shortcuts_renamed(
+    cfg: &Config,
+    wanted: &[Wanted],
+    renames: &std::collections::HashMap<String, String>,
+    prune: bool,
+    dry_run: bool,
+) -> Result<SyncReport> {
     if !dry_run && running() {
         bail!("Steam is running. Quit Steam (Steam > Exit) first, then try again.");
     }
@@ -242,7 +259,7 @@ pub fn sync_shortcuts(cfg: &Config, wanted: &[Wanted], prune: bool, dry_run: boo
     let mut entries = entries;
     let mut report = SyncReport { proton: tool.clone(), ..Default::default() };
 
-    let ours = |e: &BMap| id_from_launch(e.str("LaunchOptions"));
+    let ours = |e: &BMap| id_from_launch(e.str("LaunchOptions")).map(|id| renames.get(&id).cloned().unwrap_or(id));
     for w in wanted {
         let idx = entries.iter().position(|e| ours(e).as_deref() == Some(w.id.as_str()));
         let fields = [

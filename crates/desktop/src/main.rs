@@ -52,6 +52,8 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Res<T> + Send + 'static
 struct ArtView {
     /// `art://` address with a version, so a changed picture is loaded again.
     cover: Option<String>,
+    /// Small cover for the grid.
+    thumb: Option<String>,
     hero: Option<String>,
     logo: Option<String>,
     icon: Option<String>,
@@ -122,6 +124,19 @@ fn decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// Steam's ids for our entries, also for games moved since Steam's library was last updated.
+fn steam_ids(cfg: &Config) -> HashMap<String, u32> {
+    let mut ids = steam::shortcut_ids(cfg);
+    if let Ok(r) = db().and_then(|d| d.renames().map_err(err)) {
+        for (old, new) in r {
+            if let Some(v) = ids.get(&old).copied() {
+                ids.insert(new, v);
+            }
+        }
+    }
+    ids
+}
+
 fn local_manifests(cfg: &Config) -> HashMap<u32, Manifest> {
     let mut out = HashMap::new();
     for lib in steam::libraries(&cfg.steam_root()) {
@@ -145,7 +160,7 @@ async fn library(app: State<'_, App>) -> Res<LibraryView> {
     blocking(move || {
         let games = db()?.games().map_err(err)?;
         let local = local_manifests(&cfg);
-        let ids = steam::shortcut_ids(&cfg);
+        let ids = steam_ids(&cfg);
         let views = games
             .into_iter()
             .map(|g| {
@@ -159,6 +174,7 @@ async fn library(app: State<'_, App>) -> Res<LibraryView> {
                 GameView {
                     art: ArtView {
                         cover: art_url(&g, Art::Cover),
+                        thumb: art_url(&g, Art::Cover).map(|u| u.replacen("/cover?", "/cover-thumb?", 1)),
                         hero: art_url(&g, Art::Hero),
                         logo: art_url(&g, Art::Logo),
                         icon: art_url(&g, Art::Icon),
@@ -222,6 +238,9 @@ struct Details {
     rom_command: Option<String>,
     history: Vec<(String, String)>,
     art_on_shelf: Vec<Art>,
+    info: artwork::Info,
+    /// (file name, art:// address)
+    screenshots: Vec<(String, String)>,
 }
 
 #[tauri::command]
@@ -239,6 +258,15 @@ async fn details(app: State<'_, App>, id: String) -> Res<Details> {
             }),
             history: db.events(Some(&g.id), 12).map_err(err)?.into_iter().map(|e| (e.ts, e.msg)).collect(),
             art_on_shelf: if cfg.shelf_online() { artwork::shelf_pictures(&cfg, &g).into_iter().map(|(a, _)| a).collect() } else { vec![] },
+            info: artwork::info(&g),
+            screenshots: artwork::screenshots(&g)
+                .into_iter()
+                .map(|p| {
+                    let n = p.file_name().unwrap().to_string_lossy().into_owned();
+                    let url = format!("art://localhost/{}/shot:{}", encode(&g.id), encode(&n));
+                    (n, url)
+                })
+                .collect(),
         })
     })
     .await
@@ -369,7 +397,7 @@ async fn art_options(sgdb_id: u64, art: String) -> Res<Vec<artwork::SgdbImage>> 
 
 /// After a picture changed: copy it into Steam's artwork folder too.
 fn after_art_change(cfg: &Config, g: &Game) {
-    let appid = if g.kind == Kind::Steam { Some(g.appid) } else { steam::shortcut_ids(cfg).get(&g.id).copied() };
+    let appid = if g.kind == Kind::Steam { Some(g.appid) } else { steam_ids(cfg).get(&g.id).copied() };
     if let Some(appid) = appid {
         let _ = artwork::apply_to_steam(cfg, g, appid);
     }
@@ -419,6 +447,83 @@ async fn art_remove(app: State<'_, App>, id: String, art: String) -> Res<()> {
         Ok(())
     })
     .await
+}
+
+#[tauri::command]
+async fn info_save(app: State<'_, App>, id: String, info: artwork::Info) -> Res<()> {
+    let cfg = cfg(&app);
+    blocking(move || {
+        let g = find(&id)?;
+        artwork::save_info(&cfg, &g, &info).map_err(err)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn screenshots_add(app: State<'_, App>, id: String, paths: Vec<String>) -> Res<usize> {
+    let cfg = cfg(&app);
+    blocking(move || {
+        let g = find(&id)?;
+        let files: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
+        let n = artwork::add_screenshots(&cfg, &g, &files).map_err(err)?;
+        db()?.log(&g.id, &format!("{n} screenshots added"));
+        Ok(n)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn screenshot_remove(app: State<'_, App>, id: String, name: String) -> Res<()> {
+    let cfg = cfg(&app);
+    blocking(move || {
+        let g = find(&id)?;
+        artwork::remove_screenshot(&cfg, &g, &name).map_err(err)
+    })
+    .await
+}
+
+/// Move or rename a game. Returns its new id.
+#[tauri::command]
+async fn relocate(app: State<'_, App>, id: String, kind: Kind, group: String, name: String) -> Res<String> {
+    let cfg = cfg(&app);
+    blocking(move || {
+        let g = find(&id)?;
+        let mut db = db()?;
+        library::relocate(&cfg, &mut db, &g, kind, &group, &name).map_err(err)
+    })
+    .await
+}
+
+/// Quit Steam if it runs, update its library, start it again.
+#[tauri::command]
+fn sync_steam_restart(handle: tauri::AppHandle, app: State<'_, App>) -> u64 {
+    let cfg = cfg(&app);
+    app.jobs.spawn(&handle, "Updating Steam's library", move |ctx: Ctx| {
+        let was_running = steam::running();
+        if was_running {
+            ctx.status("quitting Steam");
+            let _ = std::process::Command::new("steam").arg("-shutdown").spawn();
+            let start = std::time::Instant::now();
+            while steam::running() {
+                if start.elapsed().as_secs() > 90 {
+                    anyhow::bail!("Steam didn't quit within 90 seconds; quit it yourself (Steam > Exit) and try again");
+                }
+                if ctx.cancel.is_cancelled() {
+                    anyhow::bail!("stopped");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+            std::thread::sleep(std::time::Duration::from_secs(2)); // let it finish writing its files
+        }
+        let mut db = Db::open_default()?;
+        let out = library::sync_to_steam(&cfg, &mut db, &[], false, false, |m| ctx.status(m))?;
+        if was_running {
+            ctx.status("starting Steam");
+            // on its own, so it keeps running when this window closes
+            let _ = std::process::Command::new("setsid").args(["-f", "steam"]).spawn();
+        }
+        Ok(format!("Steam library: {}{}", out.steam.summary(), if was_running { "; Steam is starting again" } else { "" }))
+    })
 }
 
 // ---------------------------------------------------------------- adding games
@@ -552,7 +657,7 @@ fn play(id: String) -> Res<()> {
         format!("steam://rungameid/{}", g.appid)
     } else {
         let cfg = Config::load().map_err(err)?;
-        let appid = steam::shortcut_ids(&cfg).get(&g.id).copied().ok_or("not in Steam's library yet: press Update Steam library")?;
+        let appid = steam_ids(&cfg).get(&g.id).copied().ok_or("not in Steam's library yet: press Update Steam library")?;
         steam::run_url(appid)
     };
     open(url);
@@ -576,9 +681,9 @@ fn serve_art(req: &tauri::http::Request<Vec<u8>>) -> tauri::http::Response<Cow<'
             .unwrap()
     };
     let Some((id, kind)) = path.rsplit_once('/') else { return reply(400, "text/plain", vec![]) };
-    let (Some(art), id) = (Art::parse(kind), decode(id)) else { return reply(400, "text/plain", vec![]) };
+    let kind = decode(kind);
     let stub = Game {
-        id,
+        id: decode(id),
         kind: Kind::Fan,
         rel: String::new(),
         system: String::new(),
@@ -591,7 +696,14 @@ fn serve_art(req: &tauri::http::Request<Vec<u8>>) -> tauri::http::Response<Cow<'
         installdir: String::new(),
         size: 0,
     };
-    match artwork::local(&stub, art).and_then(|p| std::fs::read(&p).ok().map(|b| (p, b))) {
+    let file = if kind == "cover-thumb" {
+        artwork::thumb(&stub)
+    } else if let Some(name) = kind.strip_prefix("shot:") {
+        artwork::screenshots(&stub).into_iter().find(|p| p.file_name().map_or(false, |f| f.to_string_lossy() == name))
+    } else {
+        Art::parse(&kind).and_then(|a| artwork::local(&stub, a))
+    };
+    match file.and_then(|p| std::fs::read(&p).ok().map(|b| (p, b))) {
         Some((p, body)) => {
             let mime = match p.extension().and_then(|e| e.to_str()) {
                 Some("jpg" | "jpeg") => "image/jpeg",
@@ -613,7 +725,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             library, status, details, jobs, job_cancel, refresh, sync_steam, install, remove, archive_upload,
             refresh_art, art_search, art_options, art_set_url, art_set_file, art_remove, import_inspect,
-            import_place, groups, settings, settings_save, secret_set, shelf_reachable, open, play, human
+            import_place, groups, info_save, screenshots_add, screenshot_remove, relocate, sync_steam_restart, settings, settings_save, secret_set, shelf_reachable, open, play, human
         ])
         .setup(|app| {
             if let Some(w) = app.get_webview_window("main") {

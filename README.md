@@ -41,14 +41,17 @@ Open **Steam-Fan** from the app menu.
 - **A game's page:** a big banner with the logo, then:
   - **Play** (through Steam), **Copy to this PC** / **Remove from PC** (saves go to the shelf first).
   - For Steam games: **Install from shelf** when Steam is down, **Copy to shelf** when this PC has the newer version.
+  - **About**: a description, who made it, when, and links (SFGHQ page, website...). Press **Edit** to write it.
+  - **Screenshots**: add as many as you like (button, or drop pictures onto the page); click one to see it large, arrow keys to flip through.
+  - **Move / Rename**: move it to another group (or between fan and non-Steam games), or rename it. Saves, artwork, screenshots, history and the copy on this PC go with it, and Steam keeps the same entry with its play time.
   - **Artwork** tab: cover, banner, logo, icon. For each, **Change** lets you pick from SteamGridDB, upload a file, drop a picture onto the window, or paste a link.
 - **Add game:** drop a download (zip, 7z, rar), a folder or a ROM onto the window, or press **Add game**. Pick **Fan game / Non-Steam game / Emulator game**, the group or system, and the name. It's unpacked straight onto the shelf, gets artwork, and goes into Steam if Steam is closed.
-- **Read shelf** looks for new or changed games, then fills in missing artwork. **Artwork** does only the artwork. **Update Steam library** adds, updates and removes Steam entries (Steam must be closed).
+- **Read shelf** looks for new or changed games, then fills in missing artwork. **Artwork** does only the artwork. **Update Steam library** adds, updates and removes Steam entries. When Steam is running, the button becomes **Restart Steam & update**: it quits Steam, updates the library and starts Steam again (Steam rewrites its library when it quits, so it can't stay open).
 - **Settings:** where the shelf is (the NAS, or any folder on this PC), API keys, where games go on this PC, Proton, emulators.
 
 ### Artwork
 
-Pictures you pick or upload are saved **on the shelf** in `artwork/`, so every PC gets them and they survive with the games. Pictures you put inside a game's own folder also count: `cover.*`, `folder.*`, `boxart.*`, `hero.*`, `logo.*`, `icon.*`. Missing covers are fetched from SteamGridDB automatically, once per game.
+Pictures you pick or upload are saved **on the shelf** in `artwork/<game>/` (with `info.toml` for the About text and `screenshots/`), so every PC gets them and they survive with the games. Pictures you put inside a game's own folder also count: `cover.*`, `folder.*`, `boxart.*`, `hero.*`, `logo.*`, `icon.*`. Missing covers are fetched from SteamGridDB automatically, once per game.
 
 A copy of each picture is kept on this PC, and the pictures are also copied into **Steam's own artwork folder**. Steam's library then shows the same covers, banners, logos and icons. Steam reads new artwork when it starts.
 

@@ -15,6 +15,9 @@ use std::process::Command;
 
 /// Find a game by id, reading the shelf again if it isn't known yet.
 pub fn find_game(cfg: &Config, db: &mut Db, id: &str) -> Result<Game> {
+    // moved or renamed since Steam's library was last updated: Steam still passes the old id
+    let renamed = db.renames().ok().and_then(|r| r.get(id).cloned());
+    let id = renamed.as_deref().unwrap_or(id);
     let find = |db: &Db| -> Result<Option<Game>> {
         let mut games = db.games()?;
         let Some(i) = games.iter().position(|g| g.id == id) else { return Ok(None) };
@@ -68,7 +71,17 @@ pub fn run_program(cfg: &Config, db: &Db, g: &Game, cmd: &[String]) -> Result<i3
         }
     }
     db.log(&g.id, "started");
-    let status = Command::new(&cmd[0]).args(&cmd[1..]).status().with_context(|| format!("cannot start {}", cmd[0]))?;
+    // Start in the program's own folder. Steam would use the shortcut's "Start in"
+    // folder, but on the first Play that folder didn't exist yet (the game was only
+    // just copied), so Steam fell back to its own folder and games that load files
+    // next to themselves (GameMaker, ...) couldn't find them.
+    let exe = local.join(&g.program);
+    let dir = if exe.is_file() { exe.parent().map(Path::to_path_buf).unwrap_or(local.clone()) } else { local.clone() };
+    let status = Command::new(&cmd[0])
+        .args(&cmd[1..])
+        .current_dir(&dir)
+        .status()
+        .with_context(|| format!("cannot start {}", cmd[0]))?;
     let rc = status.code().unwrap_or(1);
     db.log(&g.id, &format!("exited ({rc})"));
 
@@ -124,8 +137,10 @@ pub fn run_rom(cfg: &Config, db: &Db, g: &Game) -> Result<i32> {
         }
     }
     db.log(&g.id, "started");
+    let local = g.local_path(cfg);
     let status = Command::new(&cmd[0])
         .args(&cmd[1..])
+        .current_dir(if local.is_dir() { &local } else { local.parent().unwrap_or(&local) })
         .status()
         .with_context(|| format!("cannot start {}. Is it installed? (settings: emulator for {})", cmd[0], g.system))?;
     let rc = status.code().unwrap_or(1);

@@ -61,7 +61,7 @@
   }
 
   onMount(() => {
-    ondroptarget((path) => useFile(path));
+    ondroptarget((ps) => useFile(ps[0]));
     search();
     return () => ondroptarget(null);
   });

@@ -4,6 +4,7 @@
 
   let { games, view, status, busy, loaded, hasKey, unknown, onopen, onadd } = $props();
   let search = $state("");
+  let askRestart = $state(false);
   let zoom = $state(Number(localStorage.getItem("zoom") || 160));
   $effect(() => { try { localStorage.setItem("zoom", String(zoom)); } catch {} });
 
@@ -53,10 +54,18 @@
     <div class="actions">
       <button class="btn" disabled={busy || !status.shelf_online} onclick={() => api.refresh(false)} title="Look for new or changed games on the shelf">⟳ Read shelf</button>
       <button class="btn" disabled={busy || !status.shelf_online} onclick={() => api.refreshArt(false)} title="Copy artwork from the shelf and find missing covers on SteamGridDB">🖼 Artwork</button>
-      <button class="btn primary" disabled={busy || status.steam_running || !status.shelf_online} onclick={() => api.syncSteam()}
-        title={status.steam_running ? "Quit Steam first (Steam > Exit): Steam overwrites its library when it closes" : "Add new shelf games to Steam, update changed ones, remove ones that left the shelf"}>
-        ⇪ Update Steam library
-      </button>
+      {#if status.steam_running}
+        <button class="btn primary" disabled={busy || !status.shelf_online}
+          onclick={() => (askRestart = true)}
+          title="Steam rewrites its library when it quits, so it has to be closed while the library is updated. This quits Steam, updates, and starts it again.">
+          ⇪ Restart Steam &amp; update
+        </button>
+      {:else}
+        <button class="btn primary" disabled={busy || !status.shelf_online} onclick={() => api.syncSteam()}
+          title="Add new shelf games to Steam, update changed ones, remove ones that left the shelf">
+          ⇪ Update Steam library
+        </button>
+      {/if}
     </div>
   </header>
 
@@ -104,7 +113,24 @@
   </footer>
 </div>
 
+{#if askRestart}
+  <div class="overlay" role="presentation" onclick={(e) => e.target === e.currentTarget && (askRestart = false)}>
+    <div class="modal small">
+      <header><h2>Restart Steam?</h2></header>
+      <div class="body">
+        <p>Steam rewrites its library when it quits, so it has to be closed while the library is updated.</p>
+        <p class="muted">Steam-Fan quits Steam, updates the library, and starts Steam again. A game that's running in Steam is closed too.</p>
+      </div>
+      <footer>
+        <button class="btn" onclick={() => (askRestart = false)}>Cancel</button>
+        <button class="btn primary" onclick={() => { askRestart = false; api.syncSteamRestart(); }}>Restart Steam &amp; update</button>
+      </footer>
+    </div>
+  </div>
+{/if}
+
 <style>
+  .small { width: min(480px, calc(100vw - 48px)); }
   .page { display: flex; flex-direction: column; height: 100vh; }
   header { display: flex; align-items: center; gap: 16px; padding: 18px 28px 14px; }
   h1 { margin: 0; font-size: 22px; font-weight: 700; min-width: 150px; }
@@ -118,6 +144,8 @@
   h3 { margin: 6px 0 12px; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); font-weight: 600; }
   h3 span { color: var(--faint); margin-left: 6px; }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, var(--w)); gap: 22px 20px; }
+  /* cards out of view aren't drawn at all, which keeps scrolling smooth with hundreds of games */
+  .card { content-visibility: auto; contain-intrinsic-size: auto var(--w) calc(var(--w) * 1.5 + 30px); }
   .card { display: flex; flex-direction: column; gap: 8px; padding: 0; border: 0; background: none; cursor: pointer; text-align: left; color: inherit; }
   .art { position: relative; border-radius: 10px; transition: transform .18s ease, box-shadow .18s ease; box-shadow: 0 6px 16px rgba(0, 0, 0, .35); }
   .card:hover .art { transform: translateY(-4px) scale(1.02); box-shadow: 0 14px 30px rgba(0, 0, 0, .5), 0 0 0 2px var(--accent); }
