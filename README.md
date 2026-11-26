@@ -8,13 +8,144 @@ Every game you have is kept on the shelf: fan games, other non-Steam games,
 emulator games, and an offline archive of your Steam games. Steam on your PC
 shows all of them. Press Play and the game is copied from the shelf to the PC
 first, if it isn't there yet. When you quit, its saves go back to the shelf.
-Remove it from the PC whenever you need the space: it stays in Steam and copies
-again next time.
 
-Steam games normally download from Steam. When Steam's servers are down, the
-same game can be installed from the shelf instead. Then Steam starts it in
-offline mode, and updates it as usual once Steam is back. The NAS keeps that
-archive up to date by itself every day.
+## The idea
+
+Think of a **huge shelf** at home, a **small box** you carry around, and the
+**stores** outside where new things come from.
+
+```mermaid
+flowchart LR
+    STORE["🏬<br/><b>The stores</b><br/>Steam's servers<br/>fan game sites<br/>SteamGridDB"]
+    SHELF["🗄️<br/><b>The huge shelf</b><br/>your NAS<br/><br/>every game you own<br/>saves · artwork · checksums"]
+    BOX["📦<br/><b>The small box</b><br/>your PC<br/><br/>only what you<br/>play right now"]
+    STORE -- "new games and updates<br/>are put on the shelf" --> SHELF
+    SHELF -- "take a game out to play it" --> BOX
+    BOX -- "saves go back,<br/>the game goes back when<br/>you need space" --> SHELF
+    STORE -. "Steam games also come<br/>straight to the box, as always" .-> BOX
+    style STORE fill:#fff4e0,stroke:#e0a040,color:#000
+    style SHELF fill:#e3eeff,stroke:#2a6bb3,color:#000
+    style BOX fill:#e6f7ea,stroke:#3aa060,color:#000
+```
+
+- **The shelf** holds everything, and it's always there for you, even when a store closes (Steam's servers down, a fan game's link gone).
+- **The box** only holds what you're playing. Taking a game out of the box loses nothing: it's still on the shelf, and so are its saves.
+- **The stores** are where new games and updates come from. They fill the shelf; Steam also delivers its own games straight to the box, as it always has.
+
+## The pieces
+
+```mermaid
+flowchart TB
+    subgraph NET["Internet"]
+        direction LR
+        STEAM[("☁️ Steam servers")]
+        SGDB[("🖼️ SteamGridDB")]
+        SRC[("🌐 Fan game sites<br/>SFGHQ · MEGA · Drive")]
+    end
+
+    subgraph NAS["🗄️ NAS: the shelf (Synology)"]
+        direction TB
+        CMD["SteamCMD container<br/>daily archive job"]
+        FILES["steam-games share<br/>steam/ · fangames/ · nonsteam/ · roms/<br/>saves/ · artwork/"]
+        CMD --> FILES
+    end
+
+    subgraph PC["💻 Desktop PC: the box"]
+        direction TB
+        APP["Steam-Fan<br/>(library window + steam-fan)"]
+        STEAMAPP["Steam app<br/>(the launcher for everything)"]
+        LOCAL["Games on this PC<br/>~/Games · Steam library"]
+        APP -- "adds every shelf game<br/>to Steam's library" --> STEAMAPP
+        STEAMAPP -- "Play" --> APP
+        APP --> LOCAL
+        STEAMAPP --> LOCAL
+    end
+
+    STEAM == "① updates the Steam archive<br/>every day (SteamCMD)" ==> CMD
+    STEAM == "② downloads and updates<br/>Steam games, as usual" ==> STEAMAPP
+    FILES <== "③ games to the PC, saves back<br/>(home network or Tailscale)" ==> APP
+    SGDB -. "covers, banners, logos" .-> APP
+    SRC -. "new fan games, re-downloads,<br/>update checks" .-> APP
+```
+
+| Link | What travels | When |
+|---|---|---|
+| ① Steam servers → NAS | Every Steam game you own, kept up to date by SteamCMD | Every day at 10:00, by itself |
+| ② Steam servers → PC | Steam games you install and play, updated by Steam | As always, when Steam is online |
+| ③ NAS ↔ PC | Fan games, non-Steam games and ROMs when you press Play; Steam games when Steam's servers are down; saves back after playing; artwork; games you add or re-download | Whenever you play or add something |
+
+Artwork from SteamGridDB and pictures from a game's web page are saved **on the shelf**, so every PC gets them and they stay even if the site goes away.
+
+## How it works
+
+### Pressing Play on a fan game
+
+```mermaid
+sequenceDiagram
+    actor You
+    participant Steam as Steam app
+    participant SF as steam-fan
+    participant NAS as Shelf (NAS)
+    participant Game
+
+    You->>Steam: Play
+    Steam->>SF: steam-fan launch "fan:…" + the Proton command
+    alt not on this PC yet
+        SF->>NAS: copy the game (progress window)
+        SF->>SF: check every file against its checksum
+        NAS-->>SF: your saves from last time
+    end
+    SF->>Game: start it (through Proton for Windows games)
+    You->>Game: play
+    Game-->>SF: you quit
+    SF->>NAS: back up the saves
+    Note over SF,NAS: closed within seconds? A window shows Proton's error log
+```
+
+### A Steam game while Steam's servers are down
+
+```mermaid
+sequenceDiagram
+    actor You
+    participant SF as Steam-Fan
+    participant NAS as Shelf (NAS)
+    participant Steam as Steam app
+
+    Note over NAS: every day, SteamCMD has kept the archive up to date
+    You->>SF: game page → Install from shelf (Steam closed)
+    SF->>NAS: copy the archived game
+    SF->>Steam: put it in Steam's library with its manifest
+    You->>Steam: start Steam in offline mode → Play
+    Note over Steam: when the servers are back, Steam updates it as usual
+```
+
+### Adding a new fan game
+
+```mermaid
+flowchart TB
+    A["Download<br/>(zip, 7z, rar, folder)"] --> B["Drop it on Steam-Fan<br/>or + Add game"]
+    B --> C{"What is it?"}
+    C -->|"Fan game"| D["fangames/&lt;group&gt;/&lt;name&gt;[/&lt;version&gt;]"]
+    C -->|"Non-Steam game"| E["nonsteam/&lt;group&gt;/&lt;name&gt;"]
+    C -->|"Emulator game"| F["roms/&lt;system&gt;/GAMES/&lt;name&gt;"]
+    D & E & F --> G["Unpacked onto the shelf<br/>+ checksums recorded"]
+    G --> H["Artwork found<br/>(SteamGridDB or its web page)"]
+    H --> I["Added to Steam's library<br/>(right away if Steam is closed,<br/>else with the next Update)"]
+```
+
+### Keeping everything healthy
+
+```mermaid
+flowchart LR
+    V["Verify"] --> S{"Shelf copy<br/>matches checksums?"}
+    S -->|yes| P{"PC copy<br/>matches?"}
+    S -->|no| R["Re-download from its link<br/>(or download it by hand)"]
+    P -->|yes| OK["All good"]
+    P -->|no| FIX["Copy the damaged files<br/>again from the shelf"]
+    R --> V
+```
+
+The diagrams show on GitHub and in VS Code (with a Mermaid preview extension).
 
 ## Install
 
