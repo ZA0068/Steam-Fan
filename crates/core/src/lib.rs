@@ -2,9 +2,11 @@
 //! them, and Steam is the one launcher for all of them.
 
 pub mod archive;
+pub mod artwork;
 pub mod config;
 pub mod db;
 pub mod icons;
+pub mod import;
 pub mod launch;
 pub mod library;
 pub mod saves;

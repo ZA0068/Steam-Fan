@@ -32,6 +32,8 @@ impl Db {
              CREATE TABLE IF NOT EXISTS groups (key TEXT PRIMARY KEY, scan TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS programs (
                  id TEXT PRIMARY KEY, program TEXT NOT NULL, platform TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS art (
+                 id TEXT PRIMARY KEY, sgdb_id INTEGER, checked TEXT NOT NULL DEFAULT (datetime('now')));
              CREATE TABLE IF NOT EXISTS events (
                  ts TEXT NOT NULL DEFAULT (datetime('now','localtime')), game TEXT NOT NULL, msg TEXT NOT NULL);",
         )?;
@@ -47,6 +49,7 @@ impl Db {
         conn.execute_batch(
             "CREATE TABLE groups (key TEXT PRIMARY KEY, scan TEXT NOT NULL);
              CREATE TABLE programs (id TEXT PRIMARY KEY, program TEXT NOT NULL, platform TEXT NOT NULL);
+             CREATE TABLE art (id TEXT PRIMARY KEY, sgdb_id INTEGER, checked TEXT NOT NULL DEFAULT (datetime('now')));
              CREATE TABLE events (ts TEXT NOT NULL DEFAULT (datetime('now','localtime')), game TEXT NOT NULL, msg TEXT NOT NULL);",
         )?;
         Ok(Db { conn })
@@ -118,6 +121,25 @@ impl Db {
 
     pub fn forget_programs(&self) -> Result<()> {
         self.conn.execute("DELETE FROM programs", [])?;
+        Ok(())
+    }
+
+    /// SteamGridDB id found for a game, and whether it was looked up at all (None: never).
+    pub fn art_lookup(&self, id: &str) -> Option<Option<u64>> {
+        self.conn
+            .query_row("SELECT sgdb_id FROM art WHERE id = ?1", params![id], |r| r.get::<_, Option<i64>>(0))
+            .optional()
+            .ok()
+            .flatten()
+            .map(|v| v.map(|x| x as u64))
+    }
+
+    pub fn set_art_lookup(&self, id: &str, sgdb: Option<u64>) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO art (id, sgdb_id) VALUES (?1, ?2)
+             ON CONFLICT(id) DO UPDATE SET sgdb_id = excluded.sgdb_id, checked = datetime('now')",
+            params![id, sgdb.map(|v| v as i64)],
+        )?;
         Ok(())
     }
 

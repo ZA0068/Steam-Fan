@@ -1,11 +1,10 @@
 //! Steam-Fan: the NAS is the shelf, this PC is the box, Steam is the launcher.
 //!
-//! `steam-fan` with no arguments opens the app. Steam uses `steam-fan launch`
+//! `steam-fan` with no arguments opens the library window (`steam-fan-app`). Steam uses `steam-fan launch`
 //! when you press Play; the menu entry for Steam uses `steam-fan steam` so new
 //! games from the shelf appear every time Steam starts.
 
 mod cli;
-mod gui;
 mod launch_window;
 mod util;
 
@@ -43,6 +42,25 @@ enum Cmd {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Add a game to the shelf from a download (zip, 7z, rar), a folder or a ROM file.
+    Add {
+        source: String,
+        /// fan, nonsteam or rom
+        #[arg(long, default_value = "")]
+        kind: String,
+        /// Group (Sonic The Hedgehog, Kirby, ...) or, for emulator games, the system (wii, WIIU, ...)
+        #[arg(long)]
+        group: String,
+        /// Name on the shelf (default: the file or folder name)
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Copy artwork from the shelf, fetch missing covers from SteamGridDB, update Steam's artwork.
+    Art {
+        /// Look up games on SteamGridDB again, also those where nothing was found before.
+        #[arg(long)]
+        again: bool,
+    },
     /// List the games (from the last shelf read).
     List {
         /// Only games on this PC.
@@ -73,11 +91,13 @@ enum ArchiveCmd {
 fn main() {
     let args = Args::parse();
     let code = match args.cmd {
-        None => gui::run(),
+        None => cli::open_window(),
         Some(Cmd::Launch { id, command }) => launch_window::launch(&id, &command),
         Some(Cmd::Sync { dry_run, only, rescan }) => cli::sync(dry_run, &only, rescan),
         Some(Cmd::Steam { args }) => cli::steam(&args),
         Some(Cmd::List { installed }) => cli::list(installed),
+        Some(Cmd::Add { source, kind, group, name }) => cli::add(&source, &kind, &group, name.as_deref()),
+        Some(Cmd::Art { again }) => cli::art(again),
         Some(Cmd::Install { game }) => cli::install(&game),
         Some(Cmd::Remove { game }) => cli::remove(&game),
         Some(Cmd::Archive { cmd }) => match cmd {

@@ -1,7 +1,7 @@
 //! The terminal commands. Each returns the exit code.
 
 use std::os::unix::process::CommandExt;
-use steam_fan_core::{archive, library, steam, transfer, Config, Db, Game, Kind};
+use steam_fan_core::{archive, import, library, steam, transfer, Config, Db, Game, Kind};
 
 fn setup() -> Result<(Config, Db), i32> {
     let cfg = Config::load().map_err(|e| {
@@ -191,4 +191,61 @@ pub fn archive_upload(appid: u32) -> i32 {
         }
         Err(e) => fail(e),
     }
+}
+
+/// Open the library window, which is its own program next to this one.
+pub fn open_window() -> i32 {
+    let me = std::env::current_exe().ok();
+    let beside = me.as_ref().and_then(|p| p.parent()).map(|d| d.join("steam-fan-app"));
+    let prog = beside.filter(|p| p.exists()).map(|p| p.into_os_string()).unwrap_or_else(|| "steam-fan-app".into());
+    let err = std::process::Command::new(&prog).exec();
+    eprintln!("steam-fan: cannot open the window ({err}). Run ./install.sh in the Steam-Fan folder.");
+    1
+}
+
+pub fn add(source: &str, kind: &str, group: &str, name: Option<&str>) -> i32 {
+    let Ok((cfg, mut db)) = setup() else { return 2 };
+    let src = std::path::PathBuf::from(source);
+    let info = match import::inspect(&cfg, &src) {
+        Ok(i) => i,
+        Err(e) => return fail(e),
+    };
+    let kind = match kind {
+        "" => info.kind,
+        k => match Kind::from_prefix(k) {
+            Some(k) => k,
+            None => {
+                eprintln!("steam-fan: --kind must be fan, nonsteam or rom");
+                return 2;
+            }
+        },
+    };
+    let name = name.map(str::to_string).unwrap_or(info.name.clone());
+    eprintln!("Adding {name} as {} in {group}", kind.label());
+    let res = import::place(&cfg, &src, kind, group, &name, &transfer::Cancel::default(), &mut |s| eprintln!("  {s} ..."), &mut bar);
+    match res {
+        Ok(dst) => {
+            eprintln!("\nOn the shelf at {}", dst.display());
+            if let Err(e) = library::refresh(&cfg, &mut db, false, |_| {}) {
+                return fail(e);
+            }
+            eprintln!("Run `steam-fan sync` (Steam closed) to put it in Steam.");
+            0
+        }
+        Err(e) => fail(e),
+    }
+}
+
+pub fn art(again: bool) -> i32 {
+    let Ok((cfg, db)) = setup() else { return 2 };
+    let games = match db.games() {
+        Ok(g) => g,
+        Err(e) => return fail(e),
+    };
+    let rep = library::refresh_art(&cfg, &db, &games, true, again, |s| eprintln!("  {s}"));
+    for e in &rep.errors {
+        eprintln!("  ! {e}");
+    }
+    println!("{} copied from the shelf, {} found on SteamGridDB, {} with nothing there", rep.copied, rep.fetched, rep.not_found);
+    0
 }

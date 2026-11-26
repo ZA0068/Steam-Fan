@@ -1,0 +1,23 @@
+[package]
+name = "steam-fan-app"
+description = "Steam-Fan: the library window"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+steam-fan-core = { path = "../core" }
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+
+[features]
+# The window shows the built interface from ui/dist. For live editing of the
+# interface instead (npm run dev), build with --no-default-features.
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

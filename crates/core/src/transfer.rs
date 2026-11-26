@@ -6,7 +6,6 @@
 //! finished.
 
 use anyhow::{Context, Result};
-use filetime::FileTime;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -80,8 +79,16 @@ fn list_files(src: &Path, exclude: Filter) -> Result<Vec<Item>> {
     Ok(out)
 }
 
+/// Modification time in whole seconds (network shares often keep nothing finer).
+fn secs(m: &fs::Metadata) -> i64 {
+    m.modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_secs() as i64)
+}
+
 fn same(a: &fs::Metadata, b: &fs::Metadata) -> bool {
-    a.len() == b.len() && FileTime::from_last_modification_time(a).unix_seconds() == FileTime::from_last_modification_time(b).unix_seconds()
+    a.len() == b.len() && secs(a) == secs(b)
 }
 
 fn copy_file(src: &Path, dst: &Path, p: &mut Progress, cb: &mut dyn FnMut(&Progress), cancel: &Cancel) -> Result<()> {
@@ -107,11 +114,13 @@ fn copy_file(src: &Path, dst: &Path, p: &mut Progress, cb: &mut dyn FnMut(&Progr
             last = std::time::Instant::now();
         }
     }
+    let meta = fs::metadata(src)?;
+    if let Ok(t) = meta.modified() {
+        w.set_times(fs::FileTimes::new().set_modified(t))?;
+    }
     w.sync_all()?;
     drop(w);
-    let meta = fs::metadata(src)?;
     fs::set_permissions(&tmp, meta.permissions())?;
-    filetime::set_file_mtime(&tmp, FileTime::from_last_modification_time(&meta))?;
     fs::rename(&tmp, dst)?;
     Ok(())
 }
@@ -167,7 +176,7 @@ pub fn copy_newer(src: &Path, dst: &Path, exclude: Filter) -> Result<u64> {
         let d = dst.join(&it.rel);
         let sm = fs::metadata(&s)?;
         let newer = match fs::metadata(&d) {
-            Ok(dm) => FileTime::from_last_modification_time(&sm).unix_seconds() > FileTime::from_last_modification_time(&dm).unix_seconds(),
+            Ok(dm) => secs(&sm) > secs(&dm),
             Err(_) => true,
         };
         if newer {

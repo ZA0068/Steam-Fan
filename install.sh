@@ -6,6 +6,15 @@ set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
 
 command -v cargo > /dev/null || { echo "Rust is missing: sudo pacman -S rustup && rustup default stable"; exit 1; }
+# the window needs WebKitGTK; on Arch: sudo pacman -S --needed webkit2gtk-4.1
+if ! pkg-config --exists webkit2gtk-4.1 2> /dev/null; then
+    echo "The library window needs WebKitGTK. Install it with:"
+    echo "    sudo pacman -S --needed webkit2gtk-4.1"
+    exit 1
+fi
+
+# The interface (ui/dist) comes ready-built. Rebuild it only if you changed ui/src
+# and have Node.js: (cd ui && npm install && npm run build)
 
 echo "== Building (first time takes a few minutes)"
 cargo build --release
@@ -15,9 +24,10 @@ APPS=$HOME/.local/share/applications
 ICONS=$HOME/.local/share/icons/hicolor/scalable/apps
 mkdir -p "$BIN" "$APPS" "$ICONS"
 install -m 755 target/release/steam-fan "$BIN/steam-fan"
+install -m 755 target/release/steam-fan-app "$BIN/steam-fan-app"
 install -m 644 packaging/steam-fan.svg "$ICONS/steam-fan.svg"
 install -m 644 packaging/steam-fan.desktop "$APPS/steam-fan.desktop"
-echo "== Installed $BIN/steam-fan and the Steam-Fan menu entry"
+echo "== Installed steam-fan, steam-fan-app and the Steam-Fan menu entry"
 
 if [[ ${1:-} != --no-steam-menu ]]; then
     # Starting Steam from the menu first adds new shelf games to the library.

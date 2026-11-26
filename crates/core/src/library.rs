@@ -169,7 +169,14 @@ pub fn sync_to_steam(
     let mut list = vec![];
     let mut not_playable = vec![];
     for g in games.iter().filter(|g| g.kind != Kind::Steam && matches(g, only)) {
-        let icon = if dry_run { None } else { crate::icons::icon_for(cfg, g) };
+        let icon = if dry_run {
+            None
+        } else {
+            if !crate::artwork::mirrored(g) {
+                crate::artwork::mirror(cfg, g);
+            }
+            crate::artwork::local(g, crate::artwork::Art::Icon).or_else(|| crate::icons::icon_for(cfg, g))
+        };
         match wanted(cfg, g, icon) {
             Some(w) => list.push(w),
             None => not_playable.push(g.id.clone()),
@@ -178,6 +185,13 @@ pub fn sync_to_steam(
     let prune = only.is_empty() && refresh.complete && !list.is_empty();
     let report = steam::sync_shortcuts(cfg, &list, prune, dry_run)?;
     if !dry_run {
+        // the pictures go into Steam's artwork folder too (Steam reads them when it starts)
+        let ids = steam::shortcut_ids(cfg);
+        for g in games.iter().filter(|g| matches(g, only)) {
+            if let Some(appid) = if g.kind == Kind::Steam { Some(g.appid) } else { ids.get(&g.id).copied() } {
+                let _ = crate::artwork::apply_to_steam(cfg, g, appid);
+            }
+        }
         for id in &report.added {
             db.log(id, "added to Steam");
         }
@@ -254,4 +268,59 @@ pub fn upload(cfg: &Config, db: &Db, folder: &Path, kind: Kind, group: &str, can
     transfer::copy_tree(folder, &dst, &|_| false, cancel, cb)?;
     db.log(&Game::make_id(kind, group, &format!("{group}/{}", name.to_string_lossy())), "uploaded to the shelf");
     Ok(dst)
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct ArtReport {
+    pub copied: usize,
+    pub fetched: usize,
+    pub not_found: usize,
+    pub errors: Vec<String>,
+}
+
+/// Bring artwork up to date: copy pictures from the shelf to this PC, fetch
+/// missing ones from SteamGridDB (each game is looked up once; `again` looks up
+/// again), and copy them into Steam's artwork folder.
+pub fn refresh_art(cfg: &Config, db: &Db, games: &[Game], fetch: bool, again: bool, mut status: impl FnMut(&str)) -> ArtReport {
+    use crate::artwork::{self, Art};
+    let mut rep = ArtReport::default();
+    let online = cfg.shelf_online();
+    let can_fetch = fetch && online && !artwork::sgdb_key().is_empty();
+    let ids = steam::shortcut_ids(cfg);
+    for g in games {
+        if online && artwork::mirror(cfg, g) {
+            rep.copied += 1;
+        }
+        if can_fetch && g.kind != Kind::Steam && artwork::local(g, Art::Cover).is_none() {
+            let known = db.art_lookup(&g.id);
+            if again || known.is_none() {
+                status(&format!("looking up {} on SteamGridDB", g.name));
+                match artwork::auto_fill(cfg, g, known.flatten()) {
+                    Ok((id, added)) => {
+                        let _ = db.set_art_lookup(&g.id, id);
+                        if added.is_empty() {
+                            rep.not_found += 1;
+                        } else {
+                            rep.fetched += 1;
+                            db.log(&g.id, &format!("artwork from SteamGridDB: {}", added.iter().map(|a| a.name()).collect::<Vec<_>>().join(", ")));
+                        }
+                    }
+                    Err(e) => {
+                        let msg = format!("{e:#}");
+                        // a bad key or no connection: stop asking for every game
+                        let fatal = msg.contains("API key") || msg.contains("cannot reach");
+                        rep.errors.push(format!("{}: {msg}", g.name));
+                        if fatal {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        let appid = if g.kind == Kind::Steam { Some(g.appid) } else { ids.get(&g.id).copied() };
+        if let Some(appid) = appid {
+            let _ = artwork::apply_to_steam(cfg, g, appid);
+        }
+    }
+    rep
 }

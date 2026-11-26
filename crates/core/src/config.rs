@@ -193,3 +193,101 @@ mod tests {
         assert_eq!(c2.emulators.len(), 3);
     }
 }
+
+// ---------------------------------------------------------------- secrets
+
+/// API keys live in `~/.config/steam-fan/secrets.env`, one `NAME=value` per line,
+/// readable only by you. An environment variable with the same name wins, so a
+/// key can also come from your shell or a systemd unit instead of a file.
+///
+/// Names: `STEAMGRIDDB_API_KEY`, `STEAM_API_KEY`, `STEAM_ID`.
+pub mod secrets {
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+
+    pub const STEAMGRIDDB: &str = "STEAMGRIDDB_API_KEY";
+    pub const STEAM_API: &str = "STEAM_API_KEY";
+    pub const STEAM_ID: &str = "STEAM_ID";
+
+    pub fn path() -> PathBuf {
+        super::Config::path().with_file_name("secrets.env")
+    }
+
+    fn read_file() -> BTreeMap<String, String> {
+        let mut out = BTreeMap::new();
+        for line in std::fs::read_to_string(path()).unwrap_or_default().lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let line = line.strip_prefix("export ").unwrap_or(line);
+            if let Some((k, v)) = line.split_once('=') {
+                let v = v.trim().trim_matches('"').trim_matches('\'');
+                out.insert(k.trim().to_string(), v.to_string());
+            }
+        }
+        out
+    }
+
+    /// The value from the environment, else from the file, else empty.
+    pub fn get(name: &str) -> String {
+        std::env::var(name).ok().filter(|v| !v.is_empty()).unwrap_or_else(|| read_file().remove(name).unwrap_or_default())
+    }
+
+    /// Where a key currently comes from, for the settings page.
+    pub fn source(name: &str) -> &'static str {
+        if std::env::var(name).map_or(false, |v| !v.is_empty()) {
+            "environment"
+        } else if read_file().contains_key(name) {
+            "secrets.env"
+        } else {
+            "not set"
+        }
+    }
+
+    /// Store a key in the file (empty value removes it). The file is made readable only by you.
+    pub fn set(name: &str, value: &str) -> anyhow::Result<()> {
+        let mut all = read_file();
+        if value.trim().is_empty() {
+            all.remove(name);
+        } else {
+            all.insert(name.to_string(), value.trim().to_string());
+        }
+        let p = path();
+        std::fs::create_dir_all(p.parent().unwrap())?;
+        let mut text = String::from("# Steam-Fan API keys. Keep this file private.\n");
+        for (k, v) in &all {
+            text.push_str(&format!("{k}={v}\n"));
+        }
+        let tmp = p.with_extension("env.tmp");
+        std::fs::write(&tmp, text)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+        }
+        std::fs::rename(tmp, p)?;
+        Ok(())
+    }
+
+    /// `abcd…wxyz`, for showing that a key is set without showing it.
+    pub fn masked(name: &str) -> String {
+        let v = get(name);
+        if v.len() <= 8 {
+            return if v.is_empty() { String::new() } else { "••••".into() };
+        }
+        format!("{}…{}", &v[..4], &v[v.len() - 4..])
+    }
+}
+
+impl Config {
+    /// Steam Web API key: secrets file / environment first, then the old settings field.
+    pub fn steam_api_key(&self) -> String {
+        let s = secrets::get(secrets::STEAM_API);
+        if s.is_empty() { self.steam_api_key.clone() } else { s }
+    }
+    pub fn steam_id(&self) -> String {
+        let s = secrets::get(secrets::STEAM_ID);
+        if s.is_empty() { self.steam_id.clone() } else { s }
+    }
+}

@@ -71,6 +71,7 @@ fn download(cfg: &Config, g: &Game) -> bool {
             .with_inner_size([460.0, 150.0])
             .with_resizable(false)
             .with_app_id("steam-fan")
+            .with_icon(crate::util::icon())
             .with_title(&title),
         ..Default::default()
     };
@@ -166,7 +167,8 @@ pub fn show_error(title: &str, msg: &str) -> i32 {
     eprintln!("steam-fan: {title}: {msg}");
     let (t, m) = (title.to_string(), msg.to_string());
     let opts = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([440.0, 150.0]).with_app_id("steam-fan").with_title(&t),
+        viewport: egui::ViewportBuilder::default().with_inner_size([440.0, 150.0]).with_app_id("steam-fan")
+            .with_icon(crate::util::icon()).with_title(&t),
         ..Default::default()
     };
     let r = eframe::run_native("Steam-Fan", opts, Box::new(move |_| Ok(Box::new(ErrorBox(t, m)))));
