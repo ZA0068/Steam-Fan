@@ -162,6 +162,11 @@ fn temp_root() -> PathBuf {
     dirs::cache_dir().unwrap_or_else(|| crate::config::home().join(".cache")).join("steam-fan/import")
 }
 
+/// Remove what `unpack` left behind.
+pub fn clean_temp() {
+    let _ = fs::remove_dir_all(temp_root());
+}
+
 /// Unpack an archive into a fresh temporary folder. Returns the folder holding the game.
 pub fn unpack(source: &Path) -> Result<PathBuf> {
     let dest = temp_root().join(format!("{}", std::process::id() as u64 * 1000 + (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.subsec_millis() as u64)));

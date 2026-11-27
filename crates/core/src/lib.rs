@@ -5,6 +5,7 @@ pub mod archive;
 pub mod artwork;
 pub mod config;
 pub mod db;
+pub mod gamejolt;
 pub mod icons;
 pub mod import;
 pub mod integrity;

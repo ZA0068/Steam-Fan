@@ -75,6 +75,8 @@ enum Cmd {
         #[arg(long)]
         file: Option<String>,
     },
+    /// Show what a download link leads to (file, size, version) without downloading it.
+    Link { url: String },
     /// List the games (from the last shelf read).
     List {
         /// Only games on this PC.
@@ -114,6 +116,16 @@ fn main() {
         Some(Cmd::Art { again }) => cli::art(again),
         Some(Cmd::Verify { game }) => cli::verify(&game),
         Some(Cmd::Redownload { game, version, file }) => cli::redownload(&game, version.as_deref(), file.as_deref()),
+        Some(Cmd::Link { url }) => match steam_fan_core::source::describe(&url) {
+            Ok(t) => {
+                println!("{t}");
+                0
+            }
+            Err(e) => {
+                eprintln!("{e:#}");
+                1
+            }
+        },
         Some(Cmd::Install { game }) => cli::install(&game),
         Some(Cmd::Remove { game }) => cli::remove(&game),
         Some(Cmd::Archive { cmd }) => match cmd {

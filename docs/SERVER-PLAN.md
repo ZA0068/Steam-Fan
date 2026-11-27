@@ -1,7 +1,11 @@
 # Steam-Fan server: plan
 
 The shelf moves from "a folder the PC mounts" to a small service on the NAS
-that the PC app talks to. Nothing here is built yet.
+that the PC app talks to. **Step 1, the server, is built: see [SERVER.md](SERVER.md).**
+
+27 Nov 2026: the server owns all downloads (MEGA, Google Drive, direct links), upstream
+update checks and patches, and sends game files straight to the PC; the PC app only asks.
+The client must not depend on a mounted NAS path, so it can run on Windows (and maybe Mac).
 
 ## Decisions (26 Nov 2026)
 

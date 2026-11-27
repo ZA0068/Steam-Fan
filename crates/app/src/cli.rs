@@ -269,7 +269,7 @@ pub fn verify(what: &str) -> i32 {
             for f in &rep.repaired {
                 println!("  repaired: {f}");
             }
-            if rep.shelf.as_ref().map_or(true, |s| s.ok()) { 0 } else { 1 }
+            if rep.ok() { 0 } else { 1 }
         }
         Err(e) => fail(e),
     }

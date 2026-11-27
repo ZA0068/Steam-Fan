@@ -24,6 +24,12 @@
       loading = false;
     }
   }
+  // a picture that doesn't load is gone from the list, and from the selection
+  function drop(u) {
+    images = images.filter((x) => x !== u);
+    chosen = chosen.filter((x) => x !== u);
+    if (!images.length) error = "None of the pictures on that page could be loaded.";
+  }
   function click(u) {
     if (!multiple) return onpick([u]);
     chosen = chosen.includes(u) ? chosen.filter((x) => x !== u) : [...chosen, u];
@@ -31,7 +37,7 @@
 </script>
 
 <form class="find" onsubmit={(e) => { e.preventDefault(); load(); }}>
-  <input class="input" bind:value={url} placeholder="https://sonicfangameshq.com/forums/showcase/…" />
+  <input class="input" bind:value={url} placeholder="A game's page: SFGHQ showcase, Game Jolt, itch.io…" />
   <button class="btn" type="submit" disabled={loading}>{loading ? "Loading…" : "Show pictures"}</button>
 </form>
 {#if error}<p class="error">{error}</p>{/if}
@@ -39,7 +45,7 @@
   <div class="grid">
     {#each images as u (u)}
       <button class="pic" class:on={chosen.includes(u)} onclick={() => click(u)} title={u}>
-        <img src={u} alt="" loading="lazy" onerror={(e) => e.currentTarget.parentElement.remove()} />
+        <img src={u} alt="" loading="lazy" onerror={() => drop(u)} />
         {#if multiple && chosen.includes(u)}<span class="tick">✓</span>{/if}
       </button>
     {/each}

@@ -382,10 +382,32 @@ pub fn sgdb_images(game_id: u64, art: Art) -> Result<Vec<SgdbImage>> {
 
 /// Download a picture (at most 40 MB).
 pub fn download(url: &str) -> Result<Vec<u8>> {
-    let r = ureq::get(url).timeout(std::time::Duration::from_secs(60)).call().context("download failed")?;
+    let get = || ureq::get(url).set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) Steam-Fan/0.1").timeout(std::time::Duration::from_secs(60)).call();
+    let r = match get() {
+        // a busy or briefly broken server (Cloudflare 52x): one more try
+        Err(ureq::Error::Status(code, _)) if code >= 500 => {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            get()
+        }
+        r => r,
+    };
+    let r = r.map_err(|e| match e {
+        ureq::Error::Status(code, _) => anyhow::anyhow!("{} ({code}{})", url, status_hint(code)),
+        e => anyhow::anyhow!("{url}: {e}"),
+    })?;
     let mut buf = Vec::new();
     r.into_reader().take(40 << 20).read_to_end(&mut buf)?;
     Ok(buf)
+}
+
+fn status_hint(code: u16) -> &'static str {
+    match code {
+        403 => ": the site refuses it",
+        404 => ": not there any more",
+        520..=527 => ": the site's own server is broken behind Cloudflare; try later",
+        500..=599 => ": the site has a problem; try later",
+        _ => "",
+    }
 }
 
 /// A name that finds the game on SteamGridDB: without disc ids like `[VBKP]` and version tags.
@@ -689,6 +711,10 @@ fn mirror_extras(cfg: &Config, g: &Game) -> bool {
 /// Every picture on a web page (a game's SFGHQ showcase, its itch.io page...): the page's
 /// own preview picture first, then the images in it and links to images. Avatars and icons are left out.
 pub fn page_images(url: &str) -> Result<Vec<String>> {
+    // Game Jolt pages are built in the browser: ask its API instead
+    if let Some(id) = crate::gamejolt::game_id(url) {
+        return crate::gamejolt::images(id);
+    }
     let html = ureq::get(url)
         .set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) Steam-Fan/0.1")
         .timeout(std::time::Duration::from_secs(20))
@@ -745,25 +771,52 @@ pub fn images_in_html(page: &str, html: &str) -> Vec<String> {
     for c in img.captures_iter(html) {
         push(absolute(page, &c[1]));
     }
+    // a forum attachment and its small preview are the same picture
+    let full: Vec<String> = out.clone();
+    out.retain(|u| {
+        let t = u.trim_end_matches('/');
+        !(t.ends_with("/thumb") && full.iter().any(|f| f.trim_end_matches('/') == t.trim_end_matches("/thumb")))
+    });
     out.truncate(80);
     out
 }
 
-/// Download pictures by address and add them as screenshots.
-pub fn add_screenshots_from_urls(cfg: &Config, g: &Game, urls: &[String]) -> Result<usize> {
+/// Pictures added, and the ones that couldn't be downloaded (with why).
+#[derive(Debug, Default, serde::Serialize)]
+pub struct Added {
+    pub added: usize,
+    pub failed: Vec<String>,
+}
+
+/// Download pictures and add them as screenshots (onto the shelf). One that fails doesn't stop the others.
+pub fn add_screenshots_from_urls(cfg: &Config, g: &Game, urls: &[String]) -> Result<Added> {
     let dir = dirs::cache_dir().unwrap_or_else(|| crate::config::home().join(".cache")).join("steam-fan/shots");
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir)?;
     let mut files = vec![];
+    let mut out = Added::default();
+    let mut seen = std::collections::HashSet::new();
     for (i, u) in urls.iter().enumerate() {
-        let bytes = download(u)?;
-        let p = dir.join(format!("{i:03}"));
-        fs::write(&p, bytes)?;
-        files.push(p);
+        match download(u) {
+            Ok(bytes) => {
+                // the same picture under two addresses
+                if !seen.insert(<sha2::Sha256 as sha2::Digest>::digest(&bytes).to_vec()) {
+                    continue;
+                }
+                let p = dir.join(format!("{i:03}"));
+                fs::write(&p, bytes)?;
+                files.push(p);
+            }
+            Err(e) => out.failed.push(format!("{e:#}")),
+        }
     }
-    let n = add_screenshots(cfg, g, &files);
+    let n = if files.is_empty() { Ok(0) } else { add_screenshots(cfg, g, &files) };
     let _ = fs::remove_dir_all(&dir);
-    n
+    out.added = n?;
+    if out.added == 0 && !out.failed.is_empty() {
+        bail!("none of the pictures could be downloaded: {}", out.failed.join("; "));
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -780,7 +833,6 @@ mod page_tests {
             [
                 "https://sonicfangameshq.com/data/showcase/742.jpg?1700",
                 "https://sonicfangameshq.com/forums/attachments/shot1-png.1234/",
-                "https://sonicfangameshq.com/forums/attachments/shot1-png.1234/thumb",
                 "https://cdn.example.com/a.webp",
                 "https://sonicfangameshq.com/forums/showcase/advpack.742/images/rel.png",
             ]

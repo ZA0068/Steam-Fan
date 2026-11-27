@@ -2,6 +2,7 @@
 //!
 //! * Plain file links (itch.io/GameJolt CDN links, GitHub releases, Dropbox) are downloaded directly.
 //! * Google Drive share links are turned into their download address.
+//! * Game Jolt game pages (`gamejolt.com/games/<name>/<id>`): the newest Windows build (see `gamejolt`).
 //! * MEGA links need the `megatools` program (`sudo pacman -S megatools`).
 //! * Pages that need a browser (MediaFire, forum pages, captchas) can't be fetched:
 //!   the error says so, and the app offers to open the page instead.
@@ -22,6 +23,8 @@ const UA: &str = "Mozilla/5.0 (X11; Linux x86_64) Steam-Fan/0.1";
 pub enum Host {
     Direct(String),
     Mega,
+    /// A Game Jolt game page: its number.
+    GameJolt(u64),
     /// Needs a browser; the name says which site.
     Manual(&'static str),
 }
@@ -32,6 +35,9 @@ pub fn host_of(url: &str) -> Host {
     let has = |d: &str| domain == d || domain.ends_with(&format!(".{d}"));
     if has("mega.nz") || has("mega.co.nz") {
         return Host::Mega;
+    }
+    if let Some(id) = crate::gamejolt::game_id(url) {
+        return Host::GameJolt(id);
     }
     if has("drive.google.com") || has("docs.google.com") {
         let id = url
@@ -73,6 +79,10 @@ fn file_name_from(url: &str, disposition: Option<&str>) -> String {
 }
 
 fn direct(url: &str, dir: &Path, cancel: &Cancel, cb: &mut dyn FnMut(&Progress)) -> Result<PathBuf> {
+    direct_named(url, None, dir, cancel, cb)
+}
+
+fn direct_named(url: &str, name: Option<&str>, dir: &Path, cancel: &Cancel, cb: &mut dyn FnMut(&Progress)) -> Result<PathBuf> {
     // a long timeout: a game can be gigabytes
     let agent = ureq::AgentBuilder::new().timeout_connect(std::time::Duration::from_secs(20)).timeout_read(std::time::Duration::from_secs(120)).build();
     let r = agent.get(url).set("User-Agent", UA).call().context("download failed")?;
@@ -84,7 +94,10 @@ fn direct(url: &str, dir: &Path, cancel: &Cancel, cb: &mut dyn FnMut(&Progress))
         );
     }
     let total: u64 = r.header("Content-Length").and_then(|v| v.parse().ok()).unwrap_or(0);
-    let name = file_name_from(url, r.header("Content-Disposition"));
+    let name = match name.filter(|n| !n.is_empty()) {
+        Some(n) => n.replace('/', "-"),
+        None => file_name_from(url, r.header("Content-Disposition")),
+    };
     let out = dir.join(name);
     let mut f = fs::File::create(&out)?;
     let mut rd = r.into_reader();
@@ -137,13 +150,21 @@ pub fn fetch(url: &str, cancel: &Cancel, cb: &mut dyn FnMut(&Progress)) -> Resul
     match host_of(url) {
         Host::Direct(u) => direct(&u, &dir, cancel, cb),
         Host::Mega => mega(url, &dir),
+        Host::GameJolt(id) => {
+            let (u, b) = crate::gamejolt::resolve(id)?;
+            direct_named(&u, Some(&b.filename), &dir, cancel, cb)
+        }
         Host::Manual(site) => bail!("{site} can't be downloaded automatically. Download it in your browser, then use Re-download > Use a file I downloaded."),
     }
 }
 
 /// What the link serves right now (size, date, tag), to notice a newer upload. None: can't tell for this kind of link.
 pub fn remote_stamp(url: &str) -> Result<Option<String>> {
-    let Host::Direct(u) = host_of(url) else { return Ok(None) };
+    let u = match host_of(url) {
+        Host::Direct(u) => u,
+        Host::GameJolt(id) => return Ok(Some(crate::gamejolt::latest_build(id)?.stamp())),
+        _ => return Ok(None),
+    };
     let r = match ureq::head(&u).set("User-Agent", UA).timeout(std::time::Duration::from_secs(20)).call() {
         Ok(r) => r,
         Err(ureq::Error::Status(405, _)) => ureq::get(&u).set("User-Agent", UA).set("Range", "bytes=0-0").call()?,
@@ -154,6 +175,29 @@ pub fn remote_stamp(url: &str) -> Result<Option<String>> {
         .filter_map(|h| r.header(h).map(|v| v.to_string()))
         .collect();
     Ok((!parts.is_empty()).then(|| parts.join(" | ")))
+}
+
+/// What a link leads to, without downloading it (`steam-fan link <url>`).
+pub fn describe(url: &str) -> Result<String> {
+    Ok(match host_of(url) {
+        Host::Direct(u) => {
+            let st = remote_stamp(url).unwrap_or_else(|e| Some(format!("cannot reach it: {e:#}")));
+            format!("direct download\n  from:  {u}\n  serves: {}", st.unwrap_or_else(|| "unknown".into()))
+        }
+        Host::Mega => "MEGA (downloaded with megatools)".into(),
+        Host::GameJolt(id) => {
+            let (u, b) = crate::gamejolt::resolve(id)?;
+            format!(
+                "Game Jolt game {id}\n  build: {} ({}, version {})\n  file:  {} ({} bytes)\n  from:  {u}",
+                b.id,
+                b.os,
+                if b.version.is_empty() { "?" } else { &b.version },
+                b.filename,
+                b.size
+            )
+        }
+        Host::Manual(site) => format!("{site}: needs a browser"),
+    })
 }
 
 pub fn downloads_dir_clean() {
@@ -196,6 +240,7 @@ mod tests {
         assert_eq!(host_of("https://www.dropbox.com/s/x/game.zip?dl=0"), Host::Direct("https://www.dropbox.com/s/x/game.zip?dl=1".into()));
         let sfghq = "https://sonicfangameshq.com/forums/dl-attach.php?uri=attachments/sonic-quantum-collision_sage2020_etherealspeed-zip.8819/";
         assert_eq!(host_of(sfghq), Host::Direct(sfghq.into()));
+        assert_eq!(host_of("https://gamejolt.com/games/ChaosShards/415280"), Host::GameJolt(415280));
         assert_eq!(host_of("https://drive.google.com/drive/folders/abc"), Host::Manual("Google Drive (folder links)"));
         assert_eq!(host_of("https://github.com/a/b/releases/download/v1/game.zip"), Host::Direct("https://github.com/a/b/releases/download/v1/game.zip".into()));
         assert_eq!(file_name_from("https://x/y/Game%20v2.zip?x=1", None), "Game%20v2.zip");

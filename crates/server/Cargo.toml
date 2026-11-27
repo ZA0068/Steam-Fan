@@ -1,0 +1,26 @@
+[package]
+name = "steam-fan-server"
+description = "Steam-Fan-Server: the shelf as a service. Runs in Docker on the NAS: catalog, downloads, updates, file streaming."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "steam-fan-server"
+path = "src/main.rs"
+
+[dependencies]
+steam-fan-core = { path = "../core" }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+walkdir = "2"
+axum = "0.7"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "time", "net", "signal"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["fs"] }
+futures-util = "0.3"
+
+[dev-dependencies]
+tempfile = "3"

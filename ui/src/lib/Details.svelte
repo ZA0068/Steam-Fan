@@ -5,13 +5,12 @@
   import Gallery from "./Gallery.svelte";
   import Move from "./Move.svelte";
 
-  let { game, status, busy, hasKey, onback, ondroptarget, onchanged, onmoved } = $props();
+  let { game, status, busy, hasKey, tab = "overview", ontab, onnav, ondroptarget, onchanged, onmoved } = $props();
   let moving = $state(false);
   let updateMsg = $state("");
   let redl = $state(null); // the re-download dialog
   let editing = $state(null); // a copy of the info while it's being edited
   let info = $state(null);
-  let tab = $state("overview");
   let picking = $state(null); // which picture is being chosen
   let error = $state("");
 
@@ -64,6 +63,11 @@
   const kindText = $derived(
     game.kind === "Steam" ? "Steam" : game.kind === "Rom" ? `Emulator · ${game.system}` : game.platform === "Linux" ? "Linux" : "Windows · Proton",
   );
+  // pictures and the name can be changed by clicking them (not for Steam's own games)
+  const editable = $derived(game.kind !== "Steam" && status.shelf_online);
+  const kindFilter = $derived(
+    game.kind === "Rom" ? { group: game.group } : game.kind === "Steam" ? {} : { filter: game.platform === "Linux" ? "linux" : "windows" },
+  );
   const canRestore = $derived(["OnlyShelf", "ShelfNewer", "Unknown"].includes(game.fresh_code));
 </script>
 
@@ -77,27 +81,40 @@
       <div class="bg plain"></div>
     {/if}
     <div class="shade"></div>
-    <button class="btn ghost back" onclick={onback}>← Library</button>
     <div class="heroInner">
-      <div class="poster"><Cover {game} size="big" /></div>
+      {#if editable}
+        <button class="poster edit" onclick={() => (picking = "cover")} title="Change the cover">
+          <Cover {game} size="big" /><span class="pen">✎ Cover</span>
+        </button>
+      {:else}
+        <div class="poster"><Cover {game} size="big" /></div>
+      {/if}
       <div class="headline">
-        {#if game.art.logo}
+        {#if game.art.logo && editable}
+          <button class="logoBtn edit" onclick={() => (picking = "logo")} title="Change the logo">
+            <img class="logo" src={game.art.logo} alt={game.name} /><span class="pen">✎ Logo</span>
+          </button>
+        {:else if game.art.logo}
           <img class="logo" src={game.art.logo} alt={game.name} />
+        {:else if editable}
+          <button class="titleBtn edit" onclick={() => (moving = true)} title="Rename it, or move it to another group">
+            <h1>{game.name}</h1><span class="pen">✎</span>
+          </button>
         {:else}
           <h1>{game.name}</h1>
         {/if}
         <div class="meta">
-          <span class="pill">{game.kind_label}</span>
-          <span class="pill">{game.group}</span>
-          {#if game.version}<span class="pill ver">Version {game.version}</span>{/if}
-          <span class="pill">{kindText}</span>
+          <button class="pill link" onclick={() => onnav(game.kind)} title="All {game.kind_label}">{game.kind_label}</button>
+          {#if game.group}<button class="pill link" onclick={() => onnav(game.kind, { group: game.group })} title="Everything in {game.group}">{game.group}</button>{/if}
+          {#if game.version}<button class="pill ver link" onclick={() => onnav(game.kind, { group: game.group, search: game.name })} title="Every version of {game.name}">Version {game.version}</button>{/if}
+          <button class="pill link" onclick={() => onnav(game.kind, kindFilter)} title="More like this">{kindText}</button>
           {#if game.size}<span class="pill">{human(game.size)}</span>{/if}
           {#if game.kind === "Steam"}
-            <span class="pill"><span class="dot" class:good={game.fresh_code === "Same"} class:warn={game.fresh_code !== "Same"}></span>{game.fresh}</span>
+            <button class="pill link" onclick={() => onnav("Steam")}><span class="dot" class:good={game.fresh_code === "Same"} class:warn={game.fresh_code !== "Same"}></span>{game.fresh}</button>
           {:else if game.on_pc}
-            <span class="pill"><span class="dot good"></span>On this PC</span>
+            <button class="pill link" onclick={() => onnav("pc")} title="Everything on this PC"><span class="dot good"></span>On this PC</button>
           {:else}
-            <span class="pill"><span class="dot"></span>On the shelf</span>
+            <button class="pill link" onclick={() => onnav(game.kind, { filter: "shelf" })} title="Everything that's only on the shelf"><span class="dot"></span>On the shelf</button>
           {/if}
         </div>
         <div class="buttons">
@@ -127,13 +144,13 @@
   </div>
 
   <nav class="tabs">
-    <button class:on={tab === "overview"} onclick={() => (tab = "overview")}>Overview</button>
-    {#if game.kind !== "Steam"}<button class:on={tab === "art"} onclick={() => (tab = "art")}>Artwork</button>{/if}
-    <button class:on={tab === "history"} onclick={() => (tab = "history")}>History</button>
+    <button class:on={tab === "overview" || (tab === "art" && game.kind === "Steam")} onclick={() => ontab("overview")}>Overview</button>
+    {#if game.kind !== "Steam"}<button class:on={tab === "art"} onclick={() => ontab("art")}>Artwork</button>{/if}
+    <button class:on={tab === "history"} onclick={() => ontab("history")}>History</button>
   </nav>
 
   <div class="content">
-    {#if tab === "overview"}
+    {#if tab === "overview" || (tab === "art" && game.kind === "Steam")}
       <div class="box about">
         <div class="head">
           <h4>About</h4>
@@ -210,7 +227,7 @@
         {#if game.kind !== "Steam"}
           <div class="box">
             <h4>Files</h4>
-            <p class="muted small">Verify checks every file against its fingerprint, on the shelf and on this PC, and repairs the PC copy. The first time, it records the fingerprints.</p>
+            <p class="muted small">Like Steam's Verify integrity: checks the copy on this PC against the game's fingerprints and downloads any damaged or missing file again from the shelf. Settings and saves the game changed are kept. The shelf itself only changes when you add or re-download the game. Not on this PC yet: the shelf copy is checked instead and patched from the download link.</p>
             <div class="row">
               <button class="btn small" disabled={busy || !status.shelf_online} onclick={() => run(api.verify(game.id))}>✔ Verify</button>
               <button class="btn small" disabled={!info?.info?.download} title={info?.info?.download ? "" : "Add a download link under About > Edit"}
@@ -302,15 +319,27 @@
   .redl-src { display: grid; gap: 6px; }
   .redl-src .mono { word-break: break-all; }
 
-  .page { height: 100vh; overflow-y: auto; overflow-x: hidden; }
+  .page { height: 100%; overflow-y: auto; overflow-x: hidden; }
+  .edit { position: relative; border: 0; padding: 0; background: none; color: inherit; cursor: pointer; text-align: left; display: block; }
+  .edit .pen { position: absolute; right: 8px; bottom: 8px; font-size: 12px; font-weight: 600; padding: 4px 9px; border-radius: 99px; background: rgba(10, 17, 30, .85); border: 1px solid var(--line-2); color: var(--text); opacity: 0; transition: opacity .12s; pointer-events: none; }
+  .edit:hover .pen, .edit:focus-visible .pen { opacity: 1; }
+  .logoBtn { border-radius: 10px; }
+  .logoBtn:hover .logo { filter: drop-shadow(0 6px 20px rgba(0, 0, 0, .6)) drop-shadow(0 0 2px var(--accent)); }
+  .logoBtn .pen { right: -4px; bottom: -4px; }
+  .titleBtn { display: inline-flex; align-items: center; gap: 10px; }
+  .titleBtn .pen { position: static; opacity: 0; }
+  .titleBtn:hover h1 { text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 6px; }
+  .poster.edit .pen { right: 10px; bottom: 10px; }
+  .poster.edit:hover { box-shadow: 0 18px 40px rgba(0, 0, 0, .55), 0 0 0 2px var(--accent); }
+  .pill.link { cursor: pointer; color: inherit; font: inherit; }
+  .pill.link:hover { border-color: var(--accent); color: var(--text); background: rgba(31, 55, 95, .9); }
   .hero { overflow: hidden; }
   .hero { position: relative; min-height: 380px; display: flex; align-items: flex-end; }
   .bg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
   .bg.blur { filter: blur(30px) saturate(1.3); transform: scale(1.2); opacity: .55; }
   .bg.plain { background: radial-gradient(800px 300px at 30% 20%, rgba(42, 107, 179, .45), transparent), linear-gradient(180deg, #13284d, var(--bg)); }
   .shade { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(10, 17, 30, .2) 0%, rgba(10, 17, 30, .55) 55%, var(--bg) 100%); }
-  .back { position: absolute; top: 16px; left: 20px; z-index: 2; background: rgba(10, 17, 30, .55); color: var(--text); backdrop-filter: blur(6px); }
-  .heroInner { position: relative; z-index: 1; display: flex; align-items: flex-end; gap: 26px; padding: 70px 32px 22px; width: 100%; }
+  .heroInner { position: relative; z-index: 1; display: flex; align-items: flex-end; gap: 26px; padding: 40px 32px 22px; width: 100%; }
   .poster { width: 190px; flex: none; box-shadow: 0 18px 40px rgba(0, 0, 0, .55); border-radius: 14px; animation: rise .3s ease-out; }
   .headline { flex: 1; min-width: 0; animation: rise .35s ease-out; }
   .logo { max-width: min(460px, 100%); max-height: 130px; object-fit: contain; filter: drop-shadow(0 6px 20px rgba(0, 0, 0, .6)); }

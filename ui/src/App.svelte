@@ -10,9 +10,31 @@
 
   let lib = $state({ games: [], shelf: "", unknown_systems: [], has_sgdb_key: false, configured: true });
   let status = $state({ shelf_online: false, steam_running: false });
-  let view = $state("all");
-  let page = $state("library");
-  let selected = $state(null);
+  // Where you are, Steam-style: every place you go is a step in the history; ‹ › walk it.
+  // page: library | settings; view: a sidebar section; group/filter/search narrow it;
+  // selected: an open game, with its tab.
+  const home = { page: "library", view: "all", group: "", filter: "", search: "", selected: null, tab: "overview" };
+  let hist = $state([home]);
+  let pos = $state(0);
+  const here = $derived(hist[pos]);
+  const page = $derived(here.page);
+  const view = $derived(here.view);
+  const selected = $derived(here.selected);
+  const same = (a, b) => Object.keys(home).every((k) => a[k] === b[k]);
+  function go(change) {
+    const next = { ...here, ...change };
+    if (same(next, here)) return;
+    hist = [...hist.slice(0, pos + 1), next].slice(-100);
+    pos = hist.length - 1;
+  }
+  /** A section from the sidebar or a tag: a fresh list. */
+  const goList = (view, more = {}) => go({ page: "library", view, group: "", filter: "", search: "", selected: null, tab: "overview", ...more });
+  const back = () => pos > 0 && (pos -= 1);
+  const forward = () => pos < hist.length - 1 && (pos += 1);
+  /** A game was moved or renamed: its old id is gone everywhere in the history. */
+  function renamed(old, id) {
+    hist = hist.map((h) => (h.selected === old ? { ...h, selected: id } : h));
+  }
   let adding = $state(null); // null: closed, "": open empty, "/path": open with a file
   let jobs = $state([]);
   let dragging = $state(false);
@@ -36,6 +58,36 @@
   const busy = $derived(jobs.some((j) => !j.done));
   const game = $derived(lib.games.find((g) => g.id === selected) ?? null);
 
+  const titles = { all: "Library", pc: "On this PC", Fan: "Fan games", NonSteam: "Non-Steam games", Rom: "Emulator games", Steam: "Steam archive" };
+  const filters = { shelf: "Only on the shelf", windows: "Windows · Proton", linux: "Linux" };
+  // the path shown next to the arrows; every part but the last can be clicked
+  const crumbs = $derived.by(() => {
+    if (page === "settings") return [{ label: "Settings" }];
+    if (game) {
+      const c = [{ label: titles[game.kind], to: () => goList(game.kind) }];
+      if (game.group) c.push({ label: game.group, to: () => goList(game.kind, { group: game.group }) });
+      c.push({ label: game.version ? `${game.name} (${game.version})` : game.name });
+      return c;
+    }
+    const c = [{ label: titles[view], to: () => goList(view) }];
+    if (here.group) c.push({ label: here.group, to: () => goList(view, { group: here.group }) });
+    if (here.filter) c.push({ label: filters[here.filter] ?? here.filter });
+    if (here.search) c.push({ label: `“${here.search}”` });
+    c[c.length - 1].to = null;
+    return c;
+  });
+
+  // mouse side buttons and Alt+←/→, like Steam and browsers
+  function onkey(e) {
+    if (!e.altKey || e.ctrlKey || e.metaKey) return;
+    if (e.key === "ArrowLeft") { e.preventDefault(); back(); }
+    if (e.key === "ArrowRight") { e.preventDefault(); forward(); }
+  }
+  function onmouse(e) {
+    if (e.button === 3) { e.preventDefault(); back(); }
+    if (e.button === 4) { e.preventDefault(); forward(); }
+  }
+
   onMount(() => {
     load();
     poll();
@@ -58,7 +110,7 @@
     setTimeout(async () => {
       await poll();
       if (status.shelf_online && lib.configured) api.refresh(false);
-      if (!lib.configured) page = "settings";
+      if (!lib.configured) go({ page: "settings", selected: null });
     }, 300);
     return () => {
       clearInterval(t);
@@ -67,44 +119,67 @@
   });
 </script>
 
+<svelte:window onkeydown={onkey} onmouseup={onmouse} />
+
 <div class="shell">
   <Sidebar
     games={lib.games}
-    {view}
+    view={game ? "" : view}
     {page}
     {status}
     shelf={lib.shelf}
-    onview={(v) => { view = v; page = "library"; selected = null; }}
-    onsettings={() => { page = "settings"; selected = null; }}
+    onview={(v) => goList(v)}
+    onsettings={() => go({ page: "settings", selected: null })}
     onadd={() => (adding = "")}
   />
   <main>
-    {#if page === "settings"}
-      <Settings onsaved={() => { load(); poll(); page = "library"; api.refresh(true); }} />
-    {:else if game}
-      <Details
-        {game}
-        {status}
-        {busy}
-        hasKey={lib.has_sgdb_key}
-        onback={() => (selected = null)}
-        ondroptarget={(f) => (dropTarget = f)}
-        onchanged={load}
-        onmoved={async (id) => { await load(); selected = id; }}
-      />
-    {:else}
-      <Library
-        games={lib.games}
-        {view}
-        {status}
-        {busy}
-        {loaded}
-        hasKey={lib.has_sgdb_key}
-        unknown={lib.unknown_systems}
-        onopen={(id) => (selected = id)}
-        onadd={() => (adding = "")}
-      />
-    {/if}
+    <div class="topnav">
+      <button class="arrow" disabled={pos === 0} onclick={back} title="Back (Alt+←, mouse back button)">‹</button>
+      <button class="arrow" disabled={pos >= hist.length - 1} onclick={forward} title="Forward (Alt+→)">›</button>
+      <nav class="crumbs">
+        {#each crumbs as c, i}
+          {#if i}<span class="sep">›</span>{/if}
+          {#if c.to}<button class="crumb" onclick={c.to}>{c.label}</button>{:else}<span class="crumb here">{c.label}</span>{/if}
+        {/each}
+      </nav>
+    </div>
+    <div class="view">
+      {#if page === "settings"}
+        <Settings onsaved={() => { load(); poll(); goList("all"); api.refresh(true); }} />
+      {:else if game}
+        <Details
+          {game}
+          {status}
+          {busy}
+          tab={here.tab}
+          hasKey={lib.has_sgdb_key}
+          ontab={(t) => go({ tab: t })}
+          onnav={(view, more) => goList(view, more)}
+          ondroptarget={(f) => (dropTarget = f)}
+          onchanged={load}
+          onmoved={async (id) => { const old = game.id; await load(); renamed(old, id); }}
+        />
+      {:else}
+        {#key `${view}|${here.group}|${here.filter}|${here.search}`}
+          <Library
+            games={lib.games}
+            {view}
+            group={here.group}
+            filter={here.filter}
+            filterLabel={filters[here.filter] ?? ""}
+            initialSearch={here.search}
+            {status}
+            {busy}
+            {loaded}
+            hasKey={lib.has_sgdb_key}
+            unknown={lib.unknown_systems}
+            onopen={(id) => go({ selected: id, tab: "overview" })}
+            onnav={(more) => go(more)}
+            onadd={() => (adding = "")}
+          />
+        {/key}
+      {/if}
+    </div>
   </main>
 </div>
 
@@ -132,6 +207,17 @@
 
 <style>
   .shell { display: grid; grid-template-columns: 232px 1fr; height: 100vh; }
+  main { display: flex; flex-direction: column; }
+  .view { flex: 1; min-height: 0; position: relative; }
+  .topnav { display: flex; align-items: center; gap: 4px; height: 42px; padding: 0 16px; border-bottom: 1px solid var(--line); background: rgba(10, 17, 30, .6); flex: none; }
+  .arrow { width: 30px; height: 30px; border: 0; border-radius: 8px; background: transparent; color: var(--text); font-size: 22px; line-height: 1; cursor: pointer; display: grid; place-items: center; padding-bottom: 3px; }
+  .arrow:hover:not(:disabled) { background: var(--panel); }
+  .arrow:disabled { color: var(--faint); opacity: .45; cursor: default; }
+  .crumbs { display: flex; align-items: center; gap: 2px; margin-left: 10px; min-width: 0; overflow: hidden; white-space: nowrap; font-size: 13px; }
+  .crumb { border: 0; background: none; color: var(--muted); padding: 4px 6px; border-radius: 6px; cursor: pointer; overflow: hidden; text-overflow: ellipsis; }
+  button.crumb:hover { color: var(--text); background: var(--panel); }
+  .crumb.here { color: var(--text); cursor: default; font-weight: 600; }
+  .sep { color: var(--faint); }
   main { min-width: 0; overflow: hidden; position: relative; background: radial-gradient(1200px 600px at 70% -10%, rgba(42, 107, 179, 0.12), transparent 60%), var(--bg); }
   .dropping { position: fixed; inset: 10px; border: 2px dashed var(--accent); border-radius: 18px; background: rgba(10, 17, 30, 0.85); display: grid; place-items: center; text-align: center; z-index: 60; pointer-events: none; animation: fade .12s; }
   .dropping img { width: 88px; opacity: .9; }

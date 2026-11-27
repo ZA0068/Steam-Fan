@@ -133,16 +133,25 @@ flowchart TB
     H --> I["Added to Steam's library<br/>(right away if Steam is closed,<br/>else with the next Update)"]
 ```
 
-### Keeping everything healthy
+### Keeping everything healthy (the way Steam does it)
+
+Like Steam's content servers, **the shelf only changes when a game is added or downloaded**:
+a zip/rar/folder you add, a link the server downloads, a Re-download, an automatic update.
+A PC never writes game files to it. **Verify on the PC** fixes the PC's copy from the shelf,
+like Steam's "Verify integrity of game files". The server checks the shelf itself and
+patches it from the game's download link.
 
 ```mermaid
 flowchart LR
-    V["Verify"] --> S{"Shelf copy<br/>matches checksums?"}
-    S -->|yes| P{"PC copy<br/>matches?"}
-    S -->|no| R["Re-download from its link<br/>(or download it by hand)"]
-    P -->|yes| OK["All good"]
-    P -->|no| FIX["Copy the damaged files<br/>again from the shelf"]
-    R --> V
+    subgraph In["The shelf changes only here"]
+        A["Add game<br/>(zip, rar, folder)"] & L["Download from a link"] & RD["Re-download /<br/>auto update"] --> SH[("Shelf<br/>+ checksums")]
+    end
+    SH -->|"Play: copy to the PC"| PC["PC copy"]
+    PC -->|"won't run? Verify"| V{"PC files match<br/>the checksums?"}
+    V -->|"no"| FIX["Download the damaged files<br/>again from the shelf<br/>(settings and saves kept)"]
+    V -->|"yes"| OK["All good"]
+    SH -.->|"server check"| SV{"Shelf files<br/>match?"}
+    SV -.->|"no"| PL["Patch them from<br/>the download link"]
 ```
 
 The diagrams show on GitHub and in VS Code (with a Mermaid preview extension).
@@ -169,11 +178,12 @@ The script:
 Open **Steam-Fan** from the app menu.
 
 - **Library:** a cover grid of everything on the shelf, grouped by kind or by group (Sonic, Kirby, wii, ...). Search at the top; the slider at the bottom changes the cover size. "on PC" marks games copied to this PC.
-- **A game's page:** a big banner with the logo, then:
+- **Getting around, like Steam:** the ‹ › arrows at the top go back and forward through where you've been (sections, games, their tabs); so do the mouse's side buttons and Alt+←/→. Next to them, the path ("Fan games › Sonic Boll (Series) › Boll Deluxe") can be clicked. A game's tags lead to their section: its kind, its group, all its versions, Windows/Linux, on this PC or only on the shelf. Section titles in a list open just that group.
+- **A game's page:** a big banner with the logo, then (click the cover or logo to change it, the title to rename it):
   - **Play** (through Steam), **Copy to this PC** / **Remove from PC** (saves go to the shelf first).
   - For Steam games: **Install from shelf** when Steam is down, **Copy to shelf** when this PC has the newer version.
   - **About**: a description, who made it, when, the game's page (SFGHQ, itch.io...), its download link (MEGA, Google Drive, direct) and other links. Press **Edit** to write it.
-  - **Files**: **Verify** checks every file against its fingerprint (SHA-256), on the shelf and on this PC, and repairs the PC copy from the shelf. Games added in the app get fingerprints right away; for others the first Verify records them. **Check for update** asks the download link whether it serves a different file now. **Re-download** gets the game again from its link, either replacing a damaged shelf copy or adding the download as a new version. MEGA links need `sudo pacman -S megatools`; links that open a web page (MediaFire, forum pages) have to be downloaded in the browser and added with Add game.
+  - **Files**: **Verify** works like Steam's "Verify integrity": it checks the copy on this PC against the game's fingerprints (SHA-256) and downloads damaged or missing files again from the shelf, keeping settings and saves the game changed. It never changes the shelf. A game not on this PC gets its shelf copy checked instead, patched from its download link. Games added in the app get fingerprints right away; for others the first Verify records them. **Check for update** asks the download link whether it serves a different file now. **Re-download** gets the game again from its link, either replacing a damaged shelf copy or adding the download as a new version. Download links can be direct (forum attachments like SFGHQ's, GitHub, itch.io files), **Game Jolt game pages** (the newest Windows build is picked), Google Drive, Dropbox or MEGA (`sudo pacman -S megatools`). A link that only works in a browser: download it there and use Re-download > Use a file I downloaded. `steam-fan link <url>` shows what a link leads to without downloading it.
   - **Screenshots**: add as many as you like (button, drop pictures onto the page, or **From a web page**: paste the SFGHQ page and pick its pictures); click one to see it large, arrow keys to flip through.
   - **Move / Rename**: move it to another group (or between fan and non-Steam games), or rename it. Saves, artwork, screenshots, history and the copy on this PC go with it, and Steam keeps the same entry with its play time.
   - **Artwork** tab: cover, banner, logo, icon. For each, **Change** lets you pick from a web page (the game's SFGHQ page), from SteamGridDB, upload a file, drop a picture onto the window, or paste a link. Automatic artwork only uses SteamGridDB results whose name really matches, so a fan game without an entry there gets no picture rather than a wrong one.
@@ -205,9 +215,10 @@ Set them in **Settings** or edit the file. An environment variable with the same
 steam-fan                    open the library window
 steam-fan add <zip|folder|rom> --group "Sonic The Hedgehog" [--kind fan|nonsteam|rom] [--name ...]
 steam-fan art [--again]      artwork: copy from the shelf, fetch missing ones, update Steam's
-steam-fan verify "Sonic Robo Blast 2"          check files against their fingerprints, repair the PC copy
+steam-fan verify "Sonic Robo Blast 2"          repair the PC copy from the shelf (like Steam's Verify integrity)
 steam-fan redownload "Sonic Robo Blast 2" [--version "v2.2.14"]   get it again from its download link
 steam-fan redownload "Sonic Quantum Collision" --file ~/Downloads/sqc.zip   same, from a file you downloaded
+steam-fan link "https://gamejolt.com/games/ChaosShards/415280"          what a download link leads to (file, size, version)
 steam-fan sync [--dry-run] [--only "Mario 63"] [--rescan]
 steam-fan list [--installed]
 steam-fan install "Super Mario 63"
@@ -263,9 +274,11 @@ crates/core      the library: no window code, all tested
   saves.rs         save backup and restore
   transfer.rs      copying that resumes and skips identical files
   icons.rs         icons from .exe / .ico / .png / Wii U meta
+crates/server   steam-fan-server: the shelf as a service in Docker on the NAS (catalog, downloads, updates, file streaming). See docs/SERVER.md
 crates/desktop   steam-fan-app: the Tauri window; commands the interface calls, background jobs, art:// pictures
 crates/app       steam-fan: Play (with a small progress window), terminal commands
 ui/              the interface (Svelte). ui/dist is the built copy the window uses
+docker/          Dockerfile and compose.yaml for the server
 legacy/          the earlier scripts, the NAS archive script, docs
 ```
 
@@ -278,6 +291,7 @@ Run the tests with `cargo test`.
 
 ## Next steps
 
-1. **Shelf service on the NAS.** A small container serves the shelf over HTTP. The box then works through Tailscale from anywhere, with no SMB mount. The Steam archive job (`legacy/nas/archive.sh`) moves into it, with progress visible in the app.
-2. **Versions** of one game side by side (Sonic Worlds builds), and keeping games that update themselves (Sonic Robo Blast 2) on the shelf as new versions.
-3. Remote: a "wake the PC and start this game" button. Steam Remote Play already streams every library entry, Steam-Fan ones included.
+1. **Steam-Fan-Server** (step 1 built: [docs/SERVER.md](docs/SERVER.md)). The NAS runs its own Steam-Fan in Docker: it downloads (MEGA, Google Drive, direct links), checks links for updates, keeps checksums and versions, and streams game files to the PC.
+2. **The app as its client.** It asks the server instead of reading a mounted share, so it works over Tailscale from anywhere and on Windows. Saves sync through the server.
+3. The Steam archive job (`legacy/nas/archive.sh`) moves into the server, with progress visible in the app.
+4. Remote: a "wake the PC and start this game" button. Steam Remote Play already streams every library entry, Steam-Fan ones included.

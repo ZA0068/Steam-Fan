@@ -2,8 +2,14 @@
   import { api } from "./api.js";
   import Cover from "./Cover.svelte";
 
-  let { games, view, status, busy, loaded, hasKey, unknown, onopen, onadd } = $props();
-  let search = $state("");
+  let { games, view, group = "", filter = "", filterLabel = "", initialSearch = "", status, busy, loaded, hasKey, unknown, onopen, onnav, onadd } = $props();
+  // svelte-ignore state_referenced_locally
+  let search = $state(initialSearch);
+  const keep = {
+    shelf: (g) => !g.on_pc,
+    windows: (g) => g.kind !== "Steam" && g.kind !== "Rom" && g.platform !== "Linux",
+    linux: (g) => g.platform === "Linux",
+  };
   let askRestart = $state(false);
   let zoom = $state(Number(localStorage.getItem("zoom") || 160));
   $effect(() => { try { localStorage.setItem("zoom", String(zoom)); } catch {} });
@@ -15,6 +21,8 @@
     const q = search.trim().toLowerCase();
     return games.filter((g) =>
       (view === "all" || (view === "pc" ? g.on_pc : g.kind === view)) &&
+      (!group || g.group === group) &&
+      (!filter || (keep[filter] ?? (() => true))(g)) &&
       (!q || g.name.toLowerCase().includes(q) || g.group.toLowerCase().includes(q) || (g.version ?? "").toLowerCase().includes(q)));
   });
 
@@ -46,7 +54,13 @@
 
 <div class="page">
   <header>
-    <h1>{titles[view]}</h1>
+    <h1>{group || titles[view]}</h1>
+    {#if group || filter}
+      <div class="chips">
+        {#if group}<button class="chip" onclick={() => onnav({ group: "" })} title="Show all of {titles[view]}">{group} ✕</button>{/if}
+        {#if filter}<button class="chip" onclick={() => onnav({ filter: "" })}>{filterLabel} ✕</button>{/if}
+      </div>
+    {/if}
     <div class="search">
       <span>⌕</span>
       <input class="input" placeholder="Search games or groups" bind:value={search} />
@@ -90,7 +104,12 @@
 
     {#each sections as s (s.title)}
       <section>
-        <h3>{s.title} <span>{s.games.length}</span></h3>
+        <h3>
+          {#if !group && view !== "all" && view !== "pc"}
+            <button class="sect" onclick={() => onnav({ group: s.title })} title="Only {s.title}">{s.title}</button>
+          {:else}{s.title}{/if}
+          <span>{s.games.length}</span>
+        </h3>
         <div class="grid" style="--w:{zoom}px">
           {#each s.games as g (g.id)}
             {@const b = badge(g)}
@@ -132,7 +151,7 @@
 
 <style>
   .small { width: min(480px, calc(100vw - 48px)); }
-  .page { display: flex; flex-direction: column; height: 100vh; }
+  .page { display: flex; flex-direction: column; height: 100%; }
   header { display: flex; align-items: center; gap: 16px; padding: 18px 28px 14px; }
   h1 { margin: 0; font-size: 22px; font-weight: 700; min-width: 150px; }
   .search { position: relative; flex: 1; max-width: 420px; }
@@ -144,6 +163,11 @@
   section { margin-bottom: 26px; animation: rise .25s ease-out; }
   h3 { margin: 6px 0 12px; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); font-weight: 600; }
   h3 span { color: var(--faint); margin-left: 6px; }
+  .sect { all: unset; cursor: pointer; }
+  .sect:hover { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
+  .chips { display: flex; gap: 6px; }
+  .chip { border: 1px solid rgba(75, 147, 255, .5); background: rgba(75, 147, 255, .12); color: #cfe2ff; border-radius: 99px; padding: 4px 10px; font-size: 12.5px; cursor: pointer; }
+  .chip:hover { background: rgba(75, 147, 255, .25); }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, var(--w)); gap: 22px 20px; }
   /* cards out of view aren't drawn at all, which keeps scrolling smooth with hundreds of games */
   .card { content-visibility: auto; contain-intrinsic-size: auto var(--w) calc(var(--w) * 1.5 + 30px); }

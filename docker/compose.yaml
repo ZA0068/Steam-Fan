@@ -1,0 +1,30 @@
+# Steam-Fan-Server on the Synology NAS.
+#
+# Easiest: run docker/deploy-nas.sh on the PC. It copies the project, fills in docker/.env,
+# builds and starts this. By hand: Container Manager > Project > Create on this folder.
+# See docs/SERVER.md.
+services:
+  steam-fan-server:
+    container_name: steam-fan-server
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: steam-fan-server:latest
+    restart: unless-stopped
+    # Run as your DSM user so new games on the shelf belong to you, not root.
+    # deploy-nas.sh fills these in (docker/.env); by hand: `id` over SSH on the NAS.
+    user: "${SF_UID:-1026}:${SF_GID:-100}"
+    ports:
+      - "8484:8484"
+    volumes:
+      # the shelf: the share holding fangames/, nonsteam/, roms/, steam/, saves/, artwork/
+      - ${SF_SHELF_HOST:-/volume1/steam-games}:/shelf
+      # the server's own files: database, picture cache, downloads in progress, paired PCs
+      - ${SF_DATA_HOST:-/volume1/docker/steam-fan-server}:/data
+    environment:
+      SF_SCAN_MINUTES: "15"      # read the shelf for new games this often
+      SF_UPDATE_HOURS: "12"      # ask download links for new files this often (0: never)
+      SF_AUTO_UPDATE: "off"      # "replace": download new files by itself, saves stay
+      TZ: "Europe/Copenhagen"
+      # Keys, if you have them (or put them in /volume1/docker/steam-fan-server/config/steam-fan/secrets.env):
+      # STEAMGRIDDB_API_KEY: ""

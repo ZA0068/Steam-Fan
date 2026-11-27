@@ -134,7 +134,7 @@
 </div>
 
 <style>
-  .page { display: flex; flex-direction: column; height: 100vh; }
+  .page { display: flex; flex-direction: column; height: 100%; }
   header { padding: 18px 32px 6px; }
   h1 { margin: 0; font-size: 22px; }
   .scroll { flex: 1; overflow: auto; padding: 8px 32px 30px; }

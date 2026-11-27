@@ -537,7 +537,7 @@ fn verify(handle: tauri::AppHandle, app: State<'_, App>, id: String) -> Res<u64>
         let rep = steam_fan_core::integrity::verify(&cfg, &g, &ctx.cancel, &mut |s| ctx.status(s), &mut |p| ctx.progress(p))?;
         let msg = rep.summary();
         Db::open_default()?.log(&g.id, &format!("verified: {msg}"));
-        if rep.shelf.as_ref().map_or(false, |s| !s.ok()) {
+        if !rep.ok() {
             anyhow::bail!("{msg}");
         }
         Ok(msg)
@@ -568,13 +568,13 @@ async fn page_images(url: String) -> Res<Vec<String>> {
 }
 
 #[tauri::command]
-async fn screenshots_add_urls(app: State<'_, App>, id: String, urls: Vec<String>) -> Res<usize> {
+async fn screenshots_add_urls(app: State<'_, App>, id: String, urls: Vec<String>) -> Res<artwork::Added> {
     let cfg = cfg(&app);
     blocking(move || {
         let g = find(&id)?;
-        let n = artwork::add_screenshots_from_urls(&cfg, &g, &urls).map_err(err)?;
-        db()?.log(&g.id, &format!("{n} screenshots added from a web page"));
-        Ok(n)
+        let a = artwork::add_screenshots_from_urls(&cfg, &g, &urls).map_err(err)?;
+        db()?.log(&g.id, &format!("{} screenshots added from a web page", a.added));
+        Ok(a)
     })
     .await
 }

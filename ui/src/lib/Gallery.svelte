@@ -8,9 +8,11 @@
     adding = true;
     error = "";
     try {
-      await api.screenshotsAddUrls(game.id, urls);
+      const r = await api.screenshotsAddUrls(game.id, urls);
       fromPage = false;
       onchanged();
+      // some pictures may not have come through; the rest are on the shelf
+      if (r?.failed?.length) error = `${r.added} added; ${r.failed.length} couldn't be downloaded: ${r.failed.join("; ")}`;
     } catch (e) {
       error = String(e);
     } finally {
