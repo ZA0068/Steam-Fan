@@ -624,7 +624,7 @@ fn started(r: Result<u64>) -> Res<Json<Started>> {
 /// After a game folder lands on the shelf: read it, find its program and pictures, keep its checksums.
 fn after_place(cfg: &Config, db: &mut Db, dst: &Path, sums: &integrity::Manifest, ctx: &jobs::Ctx, what: &str) -> Result<Vec<Game>> {
     ctx.status("reading the shelf");
-    library::refresh(cfg, db, false, |_| {})?;
+    library::refresh_after_adding(cfg, db, dst)?;
     let mut games: Vec<Game> = db.games()?.into_iter().filter(|g| g.shelf_path(cfg) == dst).collect();
     library::find_programs(cfg, db, &mut games, &[], false, |_| {})?;
     ctx.status("artwork");

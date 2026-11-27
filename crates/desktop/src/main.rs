@@ -754,7 +754,7 @@ fn import_place(handle: tauri::AppHandle, app: State<'_, App>, source: String, k
         let (dst, sums) = import::place(&cfg, &PathBuf::from(&source), kind, &group, &name, &version, &ctx.cancel, &mut |s| ctx.status(s), &mut |p| ctx.progress(p))?;
         ctx.status("reading the shelf");
         let mut db = Db::open_default()?;
-        library::refresh(&cfg, &mut db, false, |_| {})?;
+        library::refresh_after_adding(&cfg, &mut db, &dst)?;
         let mut games: Vec<Game> = db.games()?.into_iter().filter(|g| g.shelf_path(&cfg) == dst).collect();
         library::find_programs(&cfg, &db, &mut games, &[], false, |_| {})?;
         ctx.status("artwork");

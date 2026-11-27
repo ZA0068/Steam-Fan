@@ -62,6 +62,45 @@ pub fn refresh(cfg: &Config, db: &mut Db, full: bool, mut on_read: impl FnMut(&s
     Ok(rep)
 }
 
+/// The shelf group a game is read with (`fangames/Sonic`, `roms/gba`, `steam`).
+fn group_key(g: &Game) -> String {
+    match g.kind {
+        Kind::Rom => format!("roms/{}", g.system),
+        Kind::Steam => "steam".into(),
+        _ => format!("{}/{}", g.kind.folder(), g.rel.split('/').next().unwrap_or_default()),
+    }
+}
+
+/// Read the shelf again after changing it: the groups of `changed` are always read, since a
+/// folder's time can look unchanged when the change happened in the same instant.
+fn reread(cfg: &Config, db: &mut Db, changed: &[&Game]) -> Result<RefreshReport> {
+    let mut cached = db.groups()?;
+    let before = cached.len();
+    for g in changed {
+        cached.remove(&group_key(g));
+    }
+    if cached.len() != before {
+        db.save_groups(&cached)?;
+    }
+    refresh(cfg, db, false, |_| {})
+}
+
+/// Read the shelf again after something landed at `path` on it (its group is always read).
+pub fn refresh_after_adding(cfg: &Config, db: &mut Db, path: &Path) -> Result<RefreshReport> {
+    let shelf = cfg.shelf();
+    let key = path.strip_prefix(&shelf).ok().map(|r| {
+        let parts: Vec<String> = r.components().take(2).map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+        if parts.first().map(String::as_str) == Some("steam") { "steam".to_string() } else { parts.join("/") }
+    });
+    let mut cached = db.groups()?;
+    if let Some(k) = key {
+        if cached.remove(&k).is_some() {
+            db.save_groups(&cached)?;
+        }
+    }
+    refresh(cfg, db, false, |_| {})
+}
+
 pub fn matches(g: &Game, only: &[String]) -> bool {
     only.is_empty() || only.iter().any(|o| g.id.to_lowercase().contains(&o.to_lowercase()) || g.name.to_lowercase().contains(&o.to_lowercase()))
 }
@@ -369,7 +408,7 @@ pub fn set_separate(cfg: &Config, db: &mut Db, g: &Game, separate: bool) -> Resu
     fs::write(folder.join(put), "")?;
     let name = folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     db.log(&g.id, &if separate { format!("{name}: its folders are separate games") } else { format!("{name}: its folders are versions of one game") });
-    refresh(cfg, db, false, |_| {})?;
+    reread(cfg, db, &[g])?;
     Ok(())
 }
 
@@ -449,7 +488,7 @@ pub fn relocate_title(cfg: &Config, db: &mut Db, t: &Title, kind: Kind, group: &
     // Steam knows the game by this one
     db.rename_game(&old.id, &new.id)?;
     db.log(&new.id, &format!("moved from {} with its {} versions", old.id, t.versions.len()));
-    refresh(cfg, db, false, |_| {})?;
+    reread(cfg, db, &[&old, &new])?;
     Ok(new.id)
 }
 
@@ -725,7 +764,7 @@ pub fn relocate(cfg: &Config, db: &mut Db, g: &Game, kind: Kind, group: &str, na
     }
     db.rename_game(&g.id, &ng.id)?;
     db.log(&ng.id, &format!("moved from {}", g.id));
-    refresh(cfg, db, false, |_| {})?;
+    reread(cfg, db, &[g, &ng])?;
     Ok(ng.id)
 }
 
@@ -786,7 +825,7 @@ pub fn redownload(
                 }
             };
             let (dst, m) = import::place(cfg, &file, g.kind, &group, &g.name, v, cancel, status, cb)?;
-            refresh(cfg, db, false, |_| {})?;
+            reread(cfg, db, &[g])?;
             if let Some(ng) = db.games()?.into_iter().find(|x| x.shelf_path(cfg) == dst) {
                 let _ = integrity::write(&integrity::manifest_path(cfg, &ng), &m);
                 let mut ni = info.clone();
@@ -820,7 +859,7 @@ pub fn redownload(
                 let _ = db.set_program(&g.id, "", g.platform);
                 let mut v = vec![g.clone()];
                 find_programs(cfg, db, &mut v, &[], true, |_| {})?;
-                refresh(cfg, db, false, |_| {})?;
+                reread(cfg, db, &[g])?;
                 Ok(shelf)
             }
             Err(e) => {
