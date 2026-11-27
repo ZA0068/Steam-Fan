@@ -91,13 +91,13 @@
   .head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
   h4 { margin: 0; font-size: 13px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); }
   .row { display: flex; gap: 8px; }
-  .from { margin-bottom: 14px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg-2); }
+  .from { margin-bottom: 14px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r); background: var(--bg-2); }
   .strip { display: grid; grid-auto-flow: column; grid-auto-columns: 300px; gap: 12px; overflow-x: auto; padding-bottom: 6px; }
-  .shot { padding: 0; border: 2px solid transparent; border-radius: 10px; overflow: hidden; cursor: zoom-in; background: var(--bg-2); transition: border-color .12s; }
+  .shot { padding: 0; border: 2px solid transparent; border-radius: var(--r); overflow: hidden; cursor: zoom-in; background: var(--bg-2); transition: border-color .12s; }
   .shot:hover { border-color: var(--accent); }
   .shot img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; display: block; }
   .light { position: fixed; inset: 0; z-index: 80; background: rgba(3, 6, 12, .92); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; animation: fade .15s; }
-  .light img { max-width: 92vw; max-height: 82vh; border-radius: 10px; box-shadow: var(--shadow); }
+  .light img { max-width: 92vw; max-height: 82vh; border-radius: var(--r); box-shadow: var(--shadow); }
   .bar { display: flex; gap: 8px; align-items: center; color: var(--muted); }
   .error { color: var(--bad); }
 </style>

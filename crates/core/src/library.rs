@@ -617,6 +617,12 @@ pub fn refresh_art(cfg: &Config, db: &Db, games: &[Game], fetch: bool, again: bo
     if online {
         for t in ts.iter().filter(|t| !t.versions.is_empty()) {
             crate::artwork::adopt_version_art(cfg, &t.game, &t.versions);
+            // each version's own pictures and info
+            for v in &t.versions {
+                if crate::own::mirror(cfg, v) {
+                    rep.copied += 1;
+                }
+            }
         }
     }
     let games: Vec<Game> = ts.into_iter().map(|t| t.game).collect();
@@ -882,6 +888,7 @@ mod tests {
 
     #[test]
     fn move_keeps_saves_art_and_steam_entry() {
+        let _env = crate::env_lock();
         let t = tempfile::tempdir().unwrap();
         let r = t.path();
         std::env::set_var("XDG_DATA_HOME", r.join("data"));
@@ -926,6 +933,7 @@ mod tests {
 
     #[test]
     fn game_becomes_one_of_its_versions() {
+        let _env = crate::env_lock();
         let t = tempfile::tempdir().unwrap();
         let r = t.path();
         std::env::set_var("XDG_DATA_HOME", r.join("data"));
@@ -944,6 +952,7 @@ mod tests {
 
     #[test]
     fn versions_are_one_entry_and_play_the_chosen_one() {
+        let _env = crate::env_lock();
         let t = tempfile::tempdir().unwrap();
         let r = t.path();
         std::env::set_var("XDG_DATA_HOME", r.join("data"));

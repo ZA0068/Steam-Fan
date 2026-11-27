@@ -83,6 +83,12 @@ struct VersionView {
     built: i64,
     /// An "Old" folder: never the default.
     old: bool,
+    /// What it shows: its own pictures, else the newest version's, else the game's.
+    art: ArtView,
+    /// The pictures it has of its own.
+    own_art: Vec<Art>,
+    /// It has info (description, link...) of its own.
+    own_info: bool,
 }
 
 #[derive(Serialize)]
@@ -120,6 +126,8 @@ struct GameView {
     /// The id Steam knows it by (shortcut or real app id), if it's in Steam's library.
     steam_id: Option<u32>,
     art: ArtView,
+    /// Soft groups (collections) it's in.
+    tags: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -131,10 +139,34 @@ struct LibraryView {
     configured: bool,
 }
 
-fn art_url(g: &Game, a: Art) -> Option<String> {
-    let p = artwork::local(g, a)?;
-    let v = std::fs::metadata(&p).and_then(|m| m.modified()).ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
-    Some(format!("art://localhost/{}/{}?v={v}", encode(&g.title_id()), a.name()))
+fn stamp(p: &std::path::Path) -> Option<u64> {
+    std::fs::metadata(p).and_then(|m| m.modified()).ok()?.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs())
+}
+
+/// Where the window loads Steam-Fan's pictures from. Windows' web view only allows custom
+/// schemes in the form `http://<scheme>.localhost`.
+const ART: &str = if cfg!(windows) { "http://art.localhost" } else { "art://localhost" };
+
+/// The pictures shown for a game (`version` None) or one of its versions, as addresses
+/// carrying the file's date, so a changed picture is loaded again.
+fn shown_view(shown: &steam_fan_core::own::Shown, title_id: &str, version: Option<&str>) -> ArtView {
+    let url = |a: Art| -> Option<String> {
+        let (p, from) = shown.pick(version, a)?;
+        let ver = stamp(&p)?;
+        Some(match from {
+            Some(folder) => format!("{ART}/{}/{}?own={}&v={ver}", encode(title_id), a.name(), encode(&folder)),
+            None => format!("{ART}/{}/{}?v={ver}", encode(title_id), a.name()),
+        })
+    };
+    let cover = url(Art::Cover);
+    ArtView {
+        // a version's own cover has no small copy: the full one does
+        thumb: cover.as_ref().map(|u| if u.contains("?own=") { u.clone() } else { u.replacen("/cover?", "/cover-thumb?", 1) }),
+        cover,
+        hero: url(Art::Hero),
+        logo: url(Art::Logo),
+        icon: url(Art::Icon),
+    }
 }
 
 fn encode(s: &str) -> String {
@@ -206,6 +238,8 @@ async fn library(app: State<'_, App>) -> Res<LibraryView> {
             .map(|t| {
                 let pinned = t.pinned;
                 let newest_marked = t.newest_marked;
+                let shown = steam_fan_core::own::Shown::of(&t);
+                let tid = t.id();
                 let versions: Vec<VersionView> = t
                     .versions
                     .iter()
@@ -217,8 +251,14 @@ async fn library(app: State<'_, App>) -> Res<LibraryView> {
                         playable: !v.program.is_empty(),
                         built: v.built,
                         old: steam_fan_core::shelf::is_old_version(&v.version),
+                        art: shown_view(&shown, &tid, Some(&v.id)),
+                        own_art: shown.own(&v.id),
+                        own_info: steam_fan_core::own::info(v) != artwork::Info::default(),
                     })
                     .collect();
+                // a game in versions shows the version Play uses (its own pictures, the newest's, the game's)
+                let art = if t.versions.is_empty() { shown_view(&shown, &tid, None) } else { shown_view(&shown, &tid, Some(&t.game.id)) };
+                let tags = artwork::info(&t.game).tags;
                 // before Steam's library is updated, a version's old Steam entry stands for the game
                 if !ids.contains_key(&t.id()) {
                     if let Some(a) = t.versions.iter().find_map(|v| ids.get(&v.id).copied()) {
@@ -234,13 +274,8 @@ async fn library(app: State<'_, App>) -> Res<LibraryView> {
                     (library::is_installed(&cfg, &g), None)
                 };
                 GameView {
-                    art: ArtView {
-                        cover: art_url(&g, Art::Cover),
-                        thumb: art_url(&g, Art::Cover).map(|u| u.replacen("/cover?", "/cover-thumb?", 1)),
-                        hero: art_url(&g, Art::Hero),
-                        logo: art_url(&g, Art::Logo),
-                        icon: art_url(&g, Art::Icon),
-                    },
+                    art,
+                    tags,
                     steam_id: if g.kind == Kind::Steam { Some(g.appid) } else { ids.get(&g.title_id()).copied() },
                     kind_label: g.kind.label(),
                     playable: g.kind == Kind::Steam || !g.program.is_empty(),
@@ -282,6 +317,8 @@ async fn library(app: State<'_, App>) -> Res<LibraryView> {
 struct Status {
     shelf_online: bool,
     steam_running: bool,
+    /// how the shelf is reached: the server, the mounted folder (server not answering), …
+    via: String,
 }
 
 #[tauri::command]
@@ -292,12 +329,12 @@ async fn status(app: State<'_, App>) -> Res<Status> {
     let online = blocking(move || {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let _ = tx.send(c.shelf_online());
+            let _ = tx.send((c.shelf_online(), c.shelf_via()));
         });
-        Ok(rx.recv_timeout(std::time::Duration::from_secs(4)).unwrap_or(false))
+        Ok(rx.recv_timeout(std::time::Duration::from_secs(4)).unwrap_or((false, "no answer within 4 seconds".into())))
     })
     .await?;
-    Ok(Status { shelf_online: online, steam_running: steam::running() })
+    Ok(Status { shelf_online: online.0, steam_running: steam::running(), via: online.1 })
 }
 
 #[derive(Serialize)]
@@ -309,15 +346,28 @@ struct Details {
     history: Vec<(String, String)>,
     art_on_shelf: Vec<Art>,
     info: artwork::Info,
+    /// Shown for one version: what it has of its own (empty fields: inherited).
+    own: Option<artwork::Info>,
+    /// Shown for one version: what it would inherit (the newest version's, then the game's).
+    inherited: Option<artwork::Info>,
     /// (file name, art:// address)
     screenshots: Vec<(String, String)>,
 }
 
+/// A game's page. With `version` (a version's id): that version's profile.
 #[tauri::command]
-async fn details(app: State<'_, App>, id: String) -> Res<Details> {
+async fn details(app: State<'_, App>, id: String, version: Option<String>) -> Res<Details> {
     let cfg = cfg(&app);
     blocking(move || {
-        let g = find(&id)?;
+        let (g, ver) = match version.filter(|v| !v.is_empty()) {
+            Some(vid) => {
+                let t = find_title(&vid)?;
+                let v = t.versions.iter().find(|x| x.id == vid).cloned().ok_or_else(|| format!("{vid} is not a version"))?;
+                let inherited = steam_fan_core::own::inherited_info(&t, &v);
+                (v.clone(), Some((steam_fan_core::own::effective_info(&t, &v), steam_fan_core::own::info(&v), inherited, steam_fan_core::own::arts(&v))))
+            }
+            None => (find(&id)?, None),
+        };
         let db = db()?;
         Ok(Details {
             shelf_path: g.shelf_path(&cfg).display().to_string(),
@@ -336,13 +386,19 @@ async fn details(app: State<'_, App>, id: String) -> Res<Details> {
                 }
                 h.into_iter().map(|e| (e.ts, e.msg)).collect()
             },
-            art_on_shelf: if cfg.shelf_online() { artwork::shelf_pictures(&cfg, &g).into_iter().map(|(a, _)| a).collect() } else { vec![] },
-            info: artwork::info(&g),
+            art_on_shelf: match &ver {
+                Some((_, _, _, own_art)) => own_art.clone(),
+                None if cfg.shelf_online() => artwork::shelf_pictures(&cfg, &g).into_iter().map(|(a, _)| a).collect(),
+                None => vec![],
+            },
+            info: ver.as_ref().map(|v| v.0.clone()).unwrap_or_else(|| artwork::info(&g)),
+            own: ver.as_ref().map(|v| v.1.clone()),
+            inherited: ver.as_ref().map(|v| v.2.clone()),
             screenshots: artwork::screenshots(&g)
                 .into_iter()
                 .map(|p| {
                     let n = p.file_name().unwrap().to_string_lossy().into_owned();
-                    let url = format!("art://localhost/{}/shot:{}", encode(&g.title_id()), encode(&n));
+                    let url = format!("{ART}/{}/shot:{}", encode(&g.title_id()), encode(&n));
                     (n, url)
                 })
                 .collect(),
@@ -475,6 +531,17 @@ async fn art_options(sgdb_id: u64, art: String) -> Res<Vec<artwork::SgdbImage>> 
 }
 
 /// After a picture changed: copy it into Steam's artwork folder too.
+/// A version, when pictures or info are for it alone (`version`: its id).
+fn own_target(version: &Option<String>) -> Res<Option<Game>> {
+    match version.as_deref().filter(|v| !v.is_empty()) {
+        None => Ok(None),
+        Some(vid) => {
+            let t = find_title(vid)?;
+            t.versions.into_iter().find(|v| v.id == vid).map(Some).ok_or_else(|| format!("{vid} is not a version"))
+        }
+    }
+}
+
 fn after_art_change(cfg: &Config, g: &Game) {
     let appid = if g.kind == Kind::Steam { Some(g.appid) } else { steam_ids(cfg).get(&g.id).copied() };
     if let Some(appid) = appid {
@@ -483,10 +550,16 @@ fn after_art_change(cfg: &Config, g: &Game) {
 }
 
 #[tauri::command]
-async fn art_set_url(app: State<'_, App>, id: String, art: String, url: String, sgdb_id: Option<u64>) -> Res<()> {
+async fn art_set_url(app: State<'_, App>, id: String, art: String, url: String, sgdb_id: Option<u64>, version: Option<String>) -> Res<()> {
     let cfg = cfg(&app);
     let a = Art::parse(&art).ok_or("unknown picture type")?;
     blocking(move || {
+        if let Some(v) = own_target(&version)? {
+            let bytes = artwork::download(&url).map_err(err)?;
+            steam_fan_core::own::store(&cfg, &v, a, &bytes).map_err(err)?;
+            db()?.log(&v.id, &format!("{} picture of {} changed", a.name(), v.version_label()));
+            return Ok(());
+        }
         let g = find(&id)?;
         let bytes = artwork::download(&url).map_err(err)?;
         artwork::store(&cfg, &g, a, &bytes).map_err(err)?;
@@ -502,10 +575,16 @@ async fn art_set_url(app: State<'_, App>, id: String, art: String, url: String, 
 }
 
 #[tauri::command]
-async fn art_set_file(app: State<'_, App>, id: String, art: String, path: String) -> Res<()> {
+async fn art_set_file(app: State<'_, App>, id: String, art: String, path: String, version: Option<String>) -> Res<()> {
     let cfg = cfg(&app);
     let a = Art::parse(&art).ok_or("unknown picture type")?;
     blocking(move || {
+        if let Some(v) = own_target(&version)? {
+            let bytes = std::fs::read(&path).map_err(err)?;
+            steam_fan_core::own::store(&cfg, &v, a, &bytes).map_err(err)?;
+            db()?.log(&v.id, &format!("{} picture of {} uploaded", a.name(), v.version_label()));
+            return Ok(());
+        }
         let g = find(&id)?;
         artwork::store_file(&cfg, &g, a, &PathBuf::from(path)).map_err(err)?;
         db()?.log(&g.id, &format!("{} picture uploaded", a.name()));
@@ -516,10 +595,13 @@ async fn art_set_file(app: State<'_, App>, id: String, art: String, path: String
 }
 
 #[tauri::command]
-async fn art_remove(app: State<'_, App>, id: String, art: String) -> Res<()> {
+async fn art_remove(app: State<'_, App>, id: String, art: String, version: Option<String>) -> Res<()> {
     let cfg = cfg(&app);
     let a = Art::parse(&art).ok_or("unknown picture type")?;
     blocking(move || {
+        if let Some(v) = own_target(&version)? {
+            return steam_fan_core::own::remove(&cfg, &v, a).map_err(err);
+        }
         let g = find(&id)?;
         artwork::remove(&cfg, &g, a).map_err(err)?;
         after_art_change(&cfg, &g);
@@ -529,11 +611,34 @@ async fn art_remove(app: State<'_, App>, id: String, art: String) -> Res<()> {
 }
 
 #[tauri::command]
-async fn info_save(app: State<'_, App>, id: String, info: artwork::Info) -> Res<()> {
+async fn info_save(app: State<'_, App>, id: String, info: artwork::Info, version: Option<String>) -> Res<()> {
     let cfg = cfg(&app);
     blocking(move || {
+        if let Some(v) = own_target(&version)? {
+            return steam_fan_core::own::save_info(&cfg, &v, &info).map_err(err);
+        }
         let g = find(&id)?;
         artwork::save_info(&cfg, &g, &info).map_err(err)
+    })
+    .await
+}
+
+/// Put a game in soft groups (collections): nothing moves on the shelf, the names are kept with its info.
+#[tauri::command]
+async fn tags_set(app: State<'_, App>, id: String, tags: Vec<String>) -> Res<()> {
+    let cfg = cfg(&app);
+    blocking(move || {
+        let t = find_title(&id)?;
+        let mut info = artwork::info(&t.game);
+        let mut clean: Vec<String> = vec![];
+        for tag in tags {
+            let tag = tag.trim().to_string();
+            if !tag.is_empty() && !clean.iter().any(|c| c.eq_ignore_ascii_case(&tag)) {
+                clean.push(tag);
+            }
+        }
+        info.tags = clean;
+        artwork::save_info(&cfg, &t.game, &info).map_err(err)
     })
     .await
 }
@@ -751,32 +856,103 @@ fn import_place(handle: tauri::AppHandle, app: State<'_, App>, source: String, k
             }
             return Ok(msg);
         }
-        let (dst, sums) = import::place(&cfg, &PathBuf::from(&source), kind, &group, &name, &version, &ctx.cancel, &mut |s| ctx.status(s), &mut |p| ctx.progress(p))?;
-        ctx.status("reading the shelf");
-        let mut db = Db::open_default()?;
-        library::refresh_after_adding(&cfg, &mut db, &dst)?;
-        let mut games: Vec<Game> = db.games()?.into_iter().filter(|g| g.shelf_path(&cfg) == dst).collect();
-        library::find_programs(&cfg, &db, &mut games, &[], false, |_| {})?;
-        ctx.status("artwork");
-        library::refresh_art(&cfg, &db, &games, true, false, |s| ctx.status(s));
-        for g in &games {
-            let _ = steam_fan_core::integrity::write(&steam_fan_core::integrity::manifest_path(&cfg, g), &sums);
-            db.log(&g.id, "added to the shelf");
-        }
-        let mut msg = format!("{name} is on the shelf");
-        if steam::running() {
-            msg.push_str(". Quit Steam and press Update Steam library to see it there");
-        } else {
-            let only: Vec<String> = games.iter().map(|g| g.id.clone()).collect();
-            if !only.is_empty() {
-                let out = library::sync_to_steam(&cfg, &mut db, &only, false, false, |_| {})?;
-                if !out.steam.added.is_empty() {
-                    msg.push_str(" and in Steam");
-                }
+        place_on_shelf(&cfg, &ctx, &PathBuf::from(&source), kind, &group, &name, &version)
+    })
+}
+
+/// Put a game (or a version of one) on the shelf from a file or folder on this PC: read it,
+/// find its program and pictures, keep its checksums, and add it to Steam if Steam is closed.
+fn place_on_shelf(cfg: &Config, ctx: &Ctx, source: &std::path::Path, kind: Kind, group: &str, name: &str, version: &str) -> anyhow::Result<String> {
+    let cfg = cfg.clone();
+    let (dst, sums) = import::place(&cfg, source, kind, group, name, version, &ctx.cancel, &mut |s| ctx.status(s), &mut |p| ctx.progress(p))?;
+    ctx.status("reading the shelf");
+    let mut db = Db::open_default()?;
+    library::refresh_after_adding(&cfg, &mut db, &dst)?;
+    let mut games: Vec<Game> = db.games()?.into_iter().filter(|g| g.shelf_path(&cfg) == dst).collect();
+    library::find_programs(&cfg, &db, &mut games, &[], false, |_| {})?;
+    ctx.status("artwork");
+    library::refresh_art(&cfg, &db, &games, true, false, |s| ctx.status(s));
+    for g in &games {
+        let _ = steam_fan_core::integrity::write(&steam_fan_core::integrity::manifest_path(&cfg, g), &sums);
+        db.log(&g.id, "added to the shelf");
+    }
+    let mut msg = format!("{name} is on the shelf");
+    if steam::running() {
+        msg.push_str(". Quit Steam and press Update Steam library to see it there");
+    } else {
+        let only: Vec<String> = games.iter().map(|g| g.id.clone()).collect();
+        if !only.is_empty() {
+            let out = library::sync_to_steam(&cfg, &mut db, &only, false, false, |_| {})?;
+            if !out.steam.added.is_empty() {
+                msg.push_str(" and in Steam");
             }
         }
+    }
+    Ok(msg)
+}
+
+/// Add a version to a game: from a file or folder on this PC, or from its own download link.
+/// A game that isn't kept in versions yet becomes one first: its folder turns into the
+/// version named `current`.
+#[tauri::command]
+fn add_version(handle: tauri::AppHandle, app: State<'_, App>, id: String, version: String, current: String, source: Option<String>, url: Option<String>) -> Res<u64> {
+    let cfg = cfg(&app);
+    let t = find_title(&id)?;
+    let version = version.trim().to_string();
+    if version.is_empty() {
+        return Err("give the new version a name".into());
+    }
+    if t.game.kind == Kind::Rom || t.game.kind == Kind::Steam {
+        return Err("only fan and non-Steam games are kept in versions".into());
+    }
+    if t.versions.is_empty() && current.trim().is_empty() {
+        return Err("say what the version you already have is called".into());
+    }
+    let url = url.map(|u| u.trim().to_string()).filter(|u| !u.is_empty());
+    let source = source.filter(|s| !s.trim().is_empty());
+    if url.is_none() && source.is_none() {
+        return Err("choose a file or folder, or give a download link".into());
+    }
+    Ok(app.jobs.spawn(&handle, &format!("Adding {} {version}", t.game.name), move |ctx: Ctx| {
+        let mut db = Db::open_default()?;
+        let mut g = t.game.clone();
+        let title_rel = g.title_rel();
+        let (group, name) = title_rel.rsplit_once('/').map(|(a, b)| (a.to_string(), b.to_string())).unwrap_or_default();
+        if t.versions.is_empty() {
+            ctx.status(&format!("{} becomes version {}", g.name, current.trim()));
+            let nid = library::relocate(&cfg, &mut db, &g, g.kind, &group, &name, current.trim())?;
+            g = anyhow::Context::context(library::resolve(&db.games()?, &nid), "the game moved, but can't be found")?;
+        }
+        let msg = match (&url, &source) {
+            (Some(u), _) if cfg.server_mode() => {
+                let r = steam_fan_core::remote::require(&cfg)?;
+                let body = serde_json::json!({ "url": u, "kind": format!("{:?}", g.kind), "group": group, "name": name, "version": version });
+                let m = r.run("/add-url", body, &ctx.cancel, &mut |s| ctx.status(s), &mut |p| ctx.progress(p))?;
+                steam_fan_core::remote::refresh(&cfg, &mut db)?;
+                m
+            }
+            (Some(u), _) => {
+                ctx.status("downloading");
+                let file = steam_fan_core::source::fetch(u, &ctx.cancel, &mut |p| ctx.progress(p))?;
+                let m = place_on_shelf(&cfg, &ctx, &file, g.kind, &group, &name, &version);
+                steam_fan_core::source::downloads_dir_clean();
+                let m = m?;
+                // the new version keeps its link for itself
+                if let Some(v) = library::titles(db.games()?).into_iter().find(|x| x.id() == g.title_id()).and_then(|x| x.versions.into_iter().find(|v| v.version == steam_fan_core::shelf::safe_name(&version))) {
+                    let mut own = steam_fan_core::own::info(&v);
+                    own.download = u.clone();
+                    steam_fan_core::own::save_info(&cfg, &v, &own)?;
+                }
+                m
+            }
+            (None, Some(src)) if cfg.server_mode() => {
+                steam_fan_core::remote::import(&cfg, &mut db, &PathBuf::from(src), g.kind, &group, &name, &version, &ctx.cancel, &mut |s| ctx.status(s), &mut |p| ctx.progress(p))?
+            }
+            (None, Some(src)) => place_on_shelf(&cfg, &ctx, &PathBuf::from(src), g.kind, &group, &name, &version)?,
+            (None, None) => unreachable!(),
+        };
         Ok(msg)
-    })
+    }))
 }
 
 /// Group or system names in use, for suggestions.
@@ -856,6 +1032,214 @@ fn secret_set(name: String, value: String) -> Res<()> {
     secrets::set(&name, &value).map_err(err)
 }
 
+// ---------------------------------------------------------------- appearance
+
+/// The look is kept in theme.json, apart from the settings: a broken theme can't stop the app.
+fn theme_path() -> PathBuf {
+    Config::path().with_file_name("theme.json")
+}
+
+#[derive(Serialize)]
+struct ThemeFile {
+    json: String,
+    /// started with --default-theme: the saved look isn't used this time
+    forced_default: bool,
+    path: String,
+    /// a look from before the last change, for Undo
+    previous: String,
+}
+
+#[tauri::command]
+fn theme_load() -> ThemeFile {
+    let path = theme_path();
+    ThemeFile {
+        json: std::fs::read_to_string(&path).unwrap_or_default(),
+        forced_default: std::env::args().any(|a| a == "--default-theme"),
+        path: path.display().to_string(),
+        previous: std::fs::read_to_string(path.with_file_name("theme.previous.json")).unwrap_or_default(),
+    }
+}
+
+/// Save the look; the one it replaces is kept as theme.previous.json.
+#[tauri::command]
+fn theme_save(json: String) -> Res<()> {
+    serde_json::from_str::<serde_json::Value>(&json).map_err(err)?;
+    let path = theme_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(err)?;
+    }
+    if let Ok(old) = std::fs::read_to_string(&path) {
+        if old != json {
+            let _ = std::fs::write(path.with_file_name("theme.previous.json"), old);
+        }
+    }
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, &json).map_err(err)?;
+    std::fs::rename(&tmp, &path).map_err(err)
+}
+
+// ---------------------------------------------------------------- skins
+
+/// Skins: folders with a `skin.json` (name, colors, layout, icons), an optional `style.css`,
+/// and any pictures, icons or fonts they use. Kept beside the settings, one folder per skin.
+fn skins_dir() -> PathBuf {
+    Config::path().with_file_name("skins")
+}
+
+/// A skin folder's name: letters, digits, spaces, `-` and `_` only.
+fn skin_id(name: &str) -> String {
+    let s: String = name.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == ' ' { c } else { '-' }).collect();
+    let s = s.trim().trim_matches('.').to_string();
+    if s.is_empty() { "skin".into() } else { s.chars().take(60).collect() }
+}
+
+#[derive(Serialize)]
+struct SkinInfo {
+    id: String,
+    name: String,
+    author: String,
+    description: String,
+}
+
+#[tauri::command]
+fn skins_list() -> Vec<SkinInfo> {
+    let mut out = vec![];
+    if let Ok(rd) = std::fs::read_dir(skins_dir()) {
+        for e in rd.flatten().filter(|e| e.path().join("skin.json").is_file()) {
+            let id = e.file_name().to_string_lossy().into_owned();
+            let v: serde_json::Value = std::fs::read_to_string(e.path().join("skin.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+            let text = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+            out.push(SkinInfo { name: if text("name").is_empty() { id.clone() } else { text("name") }, author: text("author"), description: text("description"), id });
+        }
+    }
+    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out
+}
+
+#[derive(Serialize)]
+struct SkinFile {
+    json: String,
+    css: String,
+    /// where its files are served from: `url(...)` in its CSS and icon files are relative to it
+    base: String,
+}
+
+#[tauri::command]
+fn skin_load(id: String) -> Res<SkinFile> {
+    let dir = skins_dir().join(skin_id(&id));
+    let json = std::fs::read_to_string(dir.join("skin.json")).map_err(|e| format!("skin {id}: {e}"))?;
+    serde_json::from_str::<serde_json::Value>(&json).map_err(|e| format!("skin {id}: skin.json isn't valid: {e}"))?;
+    Ok(SkinFile { json, css: std::fs::read_to_string(dir.join("style.css")).unwrap_or_default(), base: format!("{ART}/skin/{}", encode(&skin_id(&id))) })
+}
+
+/// Install a skin from a folder or a zip. Returns its id.
+#[tauri::command]
+async fn skin_install(path: String) -> Res<String> {
+    blocking(move || {
+        let src = PathBuf::from(&path);
+        let tmp;
+        // a zip: unpack, then find the folder that holds skin.json
+        let root = if src.is_file() {
+            tmp = std::env::temp_dir().join(format!("steam-fan-skin-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&tmp);
+            let f = std::fs::File::open(&src).map_err(err)?;
+            zip::ZipArchive::new(f).map_err(|e| format!("not a zip: {e}"))?.extract(&tmp).map_err(err)?;
+            tmp.clone()
+        } else {
+            src.clone()
+        };
+        let found = walkdir_find(&root, "skin.json", 3).ok_or("no skin.json in it")?;
+        let from = found.parent().unwrap().to_path_buf();
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&found).map_err(err)?).map_err(|e| format!("skin.json isn't valid: {e}"))?;
+        let name = v.get("name").and_then(|x| x.as_str()).map(str::to_string).unwrap_or_else(|| from.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+        let id = skin_id(&name);
+        let dst = skins_dir().join(&id);
+        let _ = std::fs::remove_dir_all(&dst);
+        copy_dir(&from, &dst).map_err(err)?;
+        if src.is_file() {
+            let _ = std::fs::remove_dir_all(std::env::temp_dir().join(format!("steam-fan-skin-{}", std::process::id())));
+        }
+        Ok(id)
+    })
+    .await
+}
+
+fn walkdir_find(dir: &std::path::Path, name: &str, depth: u32) -> Option<PathBuf> {
+    if dir.join(name).is_file() {
+        return Some(dir.join(name));
+    }
+    if depth == 0 {
+        return None;
+    }
+    std::fs::read_dir(dir).ok()?.flatten().filter(|e| e.path().is_dir()).find_map(|e| walkdir_find(&e.path(), name, depth - 1))
+}
+
+fn copy_dir(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for e in std::fs::read_dir(from)?.flatten() {
+        let (s, d) = (e.path(), to.join(e.file_name()));
+        if s.is_dir() {
+            copy_dir(&s, &d)?;
+        } else {
+            std::fs::copy(&s, &d)?;
+        }
+    }
+    Ok(())
+}
+
+/// Save the current look as a skin of your own (to edit further, or to share). Returns its id.
+#[tauri::command]
+fn skin_export(name: String, json: String, css: String) -> Res<String> {
+    serde_json::from_str::<serde_json::Value>(&json).map_err(err)?;
+    let id = skin_id(&name);
+    let dir = skins_dir().join(&id);
+    std::fs::create_dir_all(dir.join("icons")).map_err(err)?;
+    std::fs::write(dir.join("skin.json"), json).map_err(err)?;
+    std::fs::write(dir.join("style.css"), css).map_err(err)?;
+    Ok(id)
+}
+
+/// The skins folder (made if needed), to open it.
+#[tauri::command]
+fn skins_folder() -> Res<String> {
+    let d = skins_dir();
+    std::fs::create_dir_all(&d).map_err(err)?;
+    Ok(d.display().to_string())
+}
+
+#[tauri::command]
+fn skin_remove(id: String) -> Res<()> {
+    let d = skins_dir().join(skin_id(&id));
+    if d.join("skin.json").is_file() {
+        std::fs::remove_dir_all(d).map_err(err)?;
+    }
+    Ok(())
+}
+
+/// A file of a skin, for the window: `skin/<id>/<path>`.
+fn serve_skin(rest: &str) -> Option<(Vec<u8>, &'static str)> {
+    let rest = decode(rest);
+    let (id, file) = rest.split_once('/')?;
+    if file.split('/').any(|p| p == ".." || p.is_empty() || p.starts_with('.')) || file.contains('\\') {
+        return None;
+    }
+    let p = skins_dir().join(skin_id(id)).join(file);
+    let mime = match p.extension().and_then(|e| e.to_str()).map(|e| e.to_lowercase()).as_deref() {
+        Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
+        Some("gif") => "image/gif",
+        Some("woff2") => "font/woff2",
+        Some("woff") => "font/woff",
+        Some("ttf") => "font/ttf",
+        Some("otf") => "font/otf",
+        Some("css") => "text/css",
+        _ => return None,
+    };
+    Some((std::fs::read(p).ok()?, mime))
+}
+
 /// Pair this PC with a Steam-Fan-Server using the code `steam-fan-server pair` shows.
 /// The address is added to the server list.
 #[tauri::command]
@@ -872,6 +1256,12 @@ async fn server_pair(app: State<'_, App>, url: String, code: String) -> Res<Vec<
     let list = c.servers.clone();
     *app.cfg.lock().unwrap() = c;
     Ok(list)
+}
+
+/// Steam-Fan-Servers on the home network.
+#[tauri::command]
+async fn server_discover() -> Res<Vec<String>> {
+    blocking(|| Ok(steam_fan_core::remote::discover())).await
 }
 
 /// Whether a server address answers.
@@ -928,11 +1318,47 @@ fn serve_art(cfg: &Config, req: &tauri::http::Request<Vec<u8>>) -> tauri::http::
             .status(status)
             .header("Content-Type", mime)
             .header("Cache-Control", "max-age=31536000")
+            .header("Access-Control-Allow-Origin", "*")
             .body(Cow::Owned(body))
             .unwrap()
     };
+    if let Some(rest) = path.strip_prefix("skin/") {
+        return match serve_skin(rest) {
+            // skin files change while someone works on a skin: always fresh
+            Some((body, mime)) => tauri::http::Response::builder().status(200).header("Content-Type", mime).header("Cache-Control", "no-cache").header("Access-Control-Allow-Origin", "*").body(Cow::Owned(body)).unwrap(),
+            None => reply(404, "text/plain", vec![]),
+        };
+    }
     let Some((id, kind)) = path.rsplit_once('/') else { return reply(400, "text/plain", vec![]) };
     let kind = decode(kind);
+    // a version's own picture: `?own=<version folder>`
+    let own = req.uri().query().and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("own=")).map(decode));
+    if let Some(folder) = own {
+        let tid = decode(id);
+        let a = Art::parse(kind.trim_end_matches("-thumb"));
+        let look = || a.and_then(|a| steam_fan_core::artwork::pick_in(&steam_fan_core::own::cache_for(&tid, &folder), a));
+        let mut file = look();
+        if file.is_none() && cfg.server_mode() {
+            let vid = format!("{tid}/{folder}");
+            if let Ok(games) = db().and_then(|d| d.games().map_err(err)) {
+                if let Some(v) = games.iter().find(|g| g.id == vid) {
+                    let _ = steam_fan_core::own::fetch(cfg, v);
+                    file = look();
+                }
+            }
+        }
+        return match file.and_then(|p| std::fs::read(&p).ok().map(|b| (p, b))) {
+            Some((p, body)) => {
+                let mime = match p.extension().and_then(|e| e.to_str()) {
+                    Some("jpg" | "jpeg") => "image/jpeg",
+                    Some("webp") => "image/webp",
+                    _ => "image/png",
+                };
+                reply(200, mime, body)
+            }
+            None => reply(404, "text/plain", vec![]),
+        };
+    }
     let stub = Game {
         id: decode(id),
         kind: Kind::Fan,
@@ -989,7 +1415,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             library, status, details, jobs, job_cancel, refresh, sync_steam, install, remove, archive_upload,
             refresh_art, art_search, art_options, art_set_url, art_set_file, art_remove, import_inspect,
-            import_place, groups, info_save, screenshots_add, screenshot_remove, relocate, relocate_title, set_version, set_newest, set_separate, sync_steam_restart, verify, redownload, check_update, page_images, screenshots_add_urls, settings, settings_save, secret_set, shelf_reachable, server_pair, server_reachable, open, play, human
+            import_place, add_version, tags_set, groups, info_save, screenshots_add, screenshot_remove, relocate, relocate_title, set_version, set_newest, set_separate, sync_steam_restart, verify, redownload, check_update, page_images, screenshots_add_urls, settings, settings_save, secret_set, shelf_reachable, server_pair, server_reachable, server_discover, theme_load, theme_save, skins_list, skin_load, skin_install, skin_export, skins_folder, skin_remove, open, play, human
         ])
         .setup(|app| {
             if let Some(w) = app.get_webview_window("main") {

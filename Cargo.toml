@@ -11,3 +11,6 @@ authors = ["Zain"]
 [profile.release]
 opt-level = 3
 strip = true
+# smaller, faster programs; a little longer to build
+lto = "thin"
+codegen-units = 4

@@ -29,7 +29,7 @@
 {/if}
 
 <style>
-  .cover, .tile { width: 100%; aspect-ratio: 2 / 3; border-radius: 10px; display: block; }
+  .cover, .tile { width: 100%; aspect-ratio: 2 / 3; border-radius: var(--r); display: block; }
   .cover { object-fit: cover; background: var(--panel); }
   .tile {
     position: relative; overflow: hidden; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 14px; text-align: center;
@@ -43,6 +43,6 @@
   .initials { font-size: 40px; font-weight: 800; letter-spacing: 1px; color: hsla(var(--h), 90%, 85%, .9); z-index: 1; }
   .name { font-weight: 700; font-size: 14px; line-height: 1.2; z-index: 1; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
   .group { font-size: 11px; color: hsla(var(--h), 60%, 85%, .7); z-index: 1; text-transform: uppercase; letter-spacing: .8px; }
-  .big { border-radius: 14px; }
+  .big { border-radius: calc(var(--radius) + 2px); }
   .big .initials { font-size: 56px; }
 </style>

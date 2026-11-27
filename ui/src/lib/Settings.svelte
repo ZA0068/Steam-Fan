@@ -1,6 +1,7 @@
 <script>
   import { onMount } from "svelte";
   import { api, pickFile } from "./api.js";
+  import Appearance from "./Appearance.svelte";
 
   let { onsaved } = $props();
   let s = $state(null);
@@ -39,6 +40,19 @@
       error = String(e);
     } finally {
       pairing = false;
+    }
+  }
+  let finding = $state(false);
+  let found = $state(null);
+  async function find() {
+    finding = true;
+    found = null;
+    try {
+      found = await api.serverDiscover();
+    } catch (e) {
+      error = String(e);
+    } finally {
+      finding = false;
     }
   }
   function addServer() {
@@ -102,6 +116,16 @@
             <button class="btn small ghost danger" onclick={() => c.servers.splice(i, 1)}>Remove</button>
           </div>
         {/each}
+        <div class="line small">
+          <button class="btn small" disabled={finding} onclick={find}>{finding ? "Looking…" : "Find on my network"}</button>
+          {#if found}
+            {#each found as f}
+              <button class="btn small ghost" onclick={() => (newServer = f)} title="Use this address">{f}{c.servers.includes(f) ? " (in use)" : ""}</button>
+            {:else}
+              <span class="faint">No server answered on this network. Is the container running? Tailscale addresses have to be typed in.</span>
+            {/each}
+          {/if}
+        </div>
         <div class="line">
           <input class="input" placeholder="http://10.0.0.36:8484" bind:value={newServer} />
           <input class="input code" placeholder="pairing code" maxlength="6" bind:value={code} />
@@ -127,6 +151,8 @@
           <span class="pill"><span class="dot" class:good={reachable} class:bad={reachable === false}></span>{reachable ? "reachable" : "not reachable"}</span>
         </div>
       </section>
+
+      <Appearance />
 
       <section>
         <h3>API keys</h3>
@@ -194,7 +220,7 @@
   header { padding: 18px 32px 6px; }
   h1 { margin: 0; font-size: 22px; }
   .scroll { flex: 1; overflow: auto; padding: 8px 32px 30px; }
-  section { max-width: 920px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; margin-bottom: 16px; }
+  section { max-width: 920px; background: var(--panel); border: 1px solid var(--line); border-radius: calc(var(--radius) + 2px); padding: 18px 20px; margin-bottom: 16px; }
   h3 { margin: 0 0 6px; font-size: 15px; }
   section > p { margin: 0 0 12px; font-size: 13px; }
   .line { display: flex; gap: 8px; align-items: center; }
@@ -204,7 +230,7 @@
   a { color: var(--accent); }
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   .grid3 { display: grid; grid-template-columns: 1fr 1fr 1.4fr; gap: 12px; }
-  .emu { display: grid; gap: 10px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; margin-bottom: 12px; background: var(--bg-2); }
+  .emu { display: grid; gap: 10px; padding: 14px; border: 1px solid var(--line); border-radius: var(--radius); margin-bottom: 12px; background: var(--bg-2); }
   .emu .btn { justify-self: start; }
   textarea { resize: vertical; }
   footer { display: flex; align-items: center; gap: 14px; justify-content: flex-end; padding: 12px 32px; border-top: 1px solid var(--line); }

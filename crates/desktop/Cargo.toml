@@ -10,6 +10,7 @@ license.workspace = true
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+zip = { version = "2", default-features = false, features = ["deflate"] }
 steam-fan-core = { path = "../core" }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"

@@ -212,6 +212,32 @@ Open **Steam-Fan** from the app menu.
 - **Read shelf** looks for new or changed games, then fills in missing artwork. **Artwork** does only the artwork. **Update Steam library** adds, updates and removes Steam entries. When Steam is running, the button becomes **Restart Steam & update**: it quits Steam, updates the library and starts Steam again (Steam rewrites its library when it quits, so it can't stay open).
 - **Settings:** where the shelf is (the NAS, or any folder on this PC), API keys, where games go on this PC, Proton, emulators.
 
+### Appearance
+
+Settings → **Appearance** changes how Steam-Fan looks:
+
+- **Skins** change the whole look: layout, icons and style. Five are built in:
+  - **Steam-Fan**: the standard grid.
+  - **Cards**: in the style of Gameyfin.
+  - **Details**: a list with columns, in the style of Playnite's details view.
+  - **Media center**: rows of big covers under a spotlight, for the TV and arrow keys, in the style of Kodi.
+  - **Steam**.
+
+  You can install skins from a zip or a folder, or make your own with **Save my look as a skin…**. How they work, and how to write one: [docs/SKINS.md](docs/SKINS.md). An example to copy is in `skins/Neon/`.
+- **Library layout:** the three buttons at the bottom of the library switch between grid, list and shelves. The slider sets the cover size.
+- **Colors:** seven color schemes, or your own colors on top of any of them.
+- **Layout:** the sidebar on the left, on the right, or icons only; compact, normal or roomy spacing; text size; corners; font; the accent glow.
+- **Custom CSS** for anything else.
+
+Changes show right away and are kept when you press **Save look**. **Copy look** / **Paste look** let you share one.
+The look is stored in its own file, `theme.json` beside the settings, so a damaged look can't stop the app from starting.
+
+If a look goes wrong, there are four ways back:
+- New CSS (yours or a skin's) has to be confirmed within 15 seconds with **Keep**. Otherwise, or with **Esc**, it's taken back by itself.
+- **Ctrl+Shift+0** (⌘⇧0 on a Mac) restores the default look. **Undo last save** brings yours back.
+- `steam-fan-app --default-theme` starts once with the default look.
+- Delete `theme.json`.
+
 ### Artwork
 
 Pictures you pick or upload are saved **on the shelf** in `artwork/<game>/` (with `info.toml` for the About text and `screenshots/`), so every PC gets them and they survive with the games. Pictures you put inside a game's own folder also count: `cover.*`, `folder.*`, `boxart.*`, `hero.*`, `logo.*`, `icon.*`. Missing covers are fetched from SteamGridDB automatically, once per game.
@@ -271,8 +297,19 @@ steam-fan launch <id> %command%   what Steam runs when you press Play
 - **Switching versions:** the Steam entry stays the same, with its playtime and pictures. The next Play copies the chosen version to the PC if it isn't there yet.
 - **Saves:** each version has its own.
 - **Moving or renaming:** Move/Rename moves the whole game or just one version.
+- **Each version has its own profile.** A version is a member of its game, and the game is the group. On the game's page, the strip under its name (*The game · 3.2.1 ★ · 0.0.1*) opens one version. There you can:
+  - give it its own cover, logo, banner and icon, and its own description, credits and links;
+  - copy just that version to this PC, or remove it;
+  - make it the one Play uses.
 
-**Collections.** A folder of *different* games (`Sonic - Infinity Engine/`, `Sonic Adventure/` with Blast, Remix, SX...) is marked as a collection: each game is its own entry, and the folder is shown as their group. Switch between the two on a game's page ("Different games?" / "Versions of one game?"). That writes a small marker file into the folder: `.steam-fan-collection`, or `.steam-fan-versions` for a folder with just one version so far.
+  Whatever a version leaves empty comes from the newest version, then from the game. A version's own **download link** belongs to it alone, so Check for update and Re-download fetch that version's file. Its pictures and info are kept on the shelf in `artwork/<kind>/<game>/<version>/`.
+- **＋ Add version** on a game's page adds a version (Sonic Boll 0.0.1, then 3.2.1…) from a zip, a folder or its own download link. A game that isn't kept in versions yet becomes one: you name the version you already have, and both end up under one entry.
+
+**Two kinds of groups.**
+- **Folders (physical):** a game's group is the folder it's in (`fangames/Sonic The Hedgehog/...`). **Move / Rename** really moves the folder on the shelf.
+- **Collections (soft):** names you give games, like *Favourites*, *SAGE 2025* or *Multiplayer*. Nothing moves, and a game can be in several. Add one with **＋ Collection** under a game's name; see them all under **Collections** in the sidebar. They're kept with the game's info on the shelf, so every PC and the server see them.
+
+**Folders of different games.** A folder of *different* games (`Sonic - Infinity Engine/`, `Sonic Adventure/` with Blast, Remix, SX...) is marked as a collection: each game is its own entry, and the folder is shown as their group. Switch between the two on a game's page ("Different games?" / "Versions of one game?"). That writes a small marker file into the folder: `.steam-fan-collection`, or `.steam-fan-versions` for a folder with just one version so far.
 
 **Names.** Windows file sharing can't pass on `:` in a name: such a folder shows up on the PC as an empty folder plus a garbled copy (`S6G8TJ~9`). Steam-Fan never makes such names: `Sonic: Codename Backstreet` becomes `Sonic - Codename Backstreet`.
 
@@ -326,6 +363,6 @@ Run the tests with `cargo test`.
 ## Next steps
 
 1. ~~Steam-Fan-Server~~ and ~~the app as its client~~: done ([docs/SERVER.md](docs/SERVER.md)).
-2. Themes: colors, layout and custom CSS, with a safe default to fall back to.
+2. ~~Themes~~: done (Settings → Appearance).
 3. The Steam archive job (`legacy/nas/archive.sh`) moves into the server, with progress visible in the app.
 4. Remote: a "wake the PC and start this game" button. Steam Remote Play already streams every library entry, Steam-Fan ones included.

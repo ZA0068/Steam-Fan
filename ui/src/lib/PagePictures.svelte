@@ -61,7 +61,7 @@
 <style>
   .find { display: flex; gap: 8px; margin: 10px 0; }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; max-height: 420px; overflow: auto; padding: 2px; }
-  .pic { position: relative; padding: 0; border: 2px solid transparent; border-radius: 9px; overflow: hidden; cursor: pointer; background: repeating-conic-gradient(#121c30 0 25%, #0f1828 0 50%) 0 0 / 16px 16px; aspect-ratio: 4 / 3; }
+  .pic { position: relative; padding: 0; border: 2px solid transparent; border-radius: var(--r); overflow: hidden; cursor: pointer; background: repeating-conic-gradient(var(--panel) 0 25%, var(--bg-2) 0 50%) 0 0 / 16px 16px; aspect-ratio: 4 / 3; }
   .pic:hover, .pic.on { border-color: var(--accent); }
   .pic img { width: 100%; height: 100%; object-fit: contain; display: block; }
   .tick { position: absolute; top: 6px; right: 6px; background: var(--accent); color: white; border-radius: 50%; width: 22px; height: 22px; display: grid; place-items: center; font-size: 13px; }

@@ -40,9 +40,9 @@
 
 <style>
   .stack { position: fixed; right: 18px; bottom: 18px; display: flex; flex-direction: column; gap: 10px; z-index: 70; width: 360px; }
-  .toast { background: rgba(18, 29, 49, .96); border: 1px solid var(--line-2); border-radius: 12px; padding: 12px 14px; box-shadow: var(--shadow); animation: rise .2s ease-out; backdrop-filter: blur(8px); }
-  .toast.ok { border-color: rgba(70, 214, 143, .45); }
-  .toast.err { border-color: rgba(255, 111, 111, .5); }
+  .toast { background: rgba(var(--panel-rgb), .96); border: 1px solid var(--line-2); border-radius: var(--radius); padding: 12px 14px; box-shadow: var(--shadow); animation: rise .2s ease-out; backdrop-filter: blur(8px); }
+  .toast.ok { border-color: rgba(var(--good-rgb), .45); }
+  .toast.err { border-color: rgba(var(--bad-rgb), .5); }
   .top { display: flex; align-items: center; gap: 8px; }
   .top b { flex: 1; font-size: 13px; }
   .ok .top span { color: var(--good); }

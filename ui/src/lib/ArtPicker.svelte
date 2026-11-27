@@ -3,7 +3,9 @@
   import { api, pickFile } from "./api.js";
   import PagePictures from "./PagePictures.svelte";
 
-  let { game, art, hasKey, page = "", onclose, ondone, ondroptarget } = $props();
+  // version: a version's id when the picture is for that version alone
+  let { game, art, hasKey, page = "", version = null, onclose, ondone, ondroptarget } = $props();
+  const forVersion = $derived(version ? game.versions?.find((v) => v.id === version) : null);
   const labels = { cover: "cover", hero: "banner", logo: "logo", icon: "icon" };
 
   // svelte-ignore state_referenced_locally
@@ -55,8 +57,8 @@
       saving = false;
     }
   }
-  const useImage = (img) => save(api.artSetUrl(game.id, art, img.url, chosen?.id));
-  const useFile = (path) => path && save(api.artSetFile(game.id, art, path));
+  const useImage = (img) => save(api.artSetUrl(game.id, art, img.url, chosen?.id, version));
+  const useFile = (path) => path && save(api.artSetFile(game.id, art, path, version));
   async function upload() {
     useFile(await pickFile({ images: true }));
   }
@@ -73,7 +75,7 @@
 <div class="overlay" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
   <div class="modal wide">
     <header>
-      <h2>Choose a {labels[art]} for {game.name}</h2>
+      <h2>Choose a {labels[art]} for {game.name}{forVersion ? ` ${forVersion.label}` : ""}</h2>
       <button class="btn ghost" onclick={onclose}>✕</button>
     </header>
     <div class="body">
@@ -86,13 +88,13 @@
       </div>
       <div class="link">
         <input class="input" placeholder="https://… image link" bind:value={link} />
-        <button class="btn" disabled={!link.trim() || saving} onclick={() => save(api.artSetUrl(game.id, art, link.trim(), null))}>Use link</button>
+        <button class="btn" disabled={!link.trim() || saving} onclick={() => save(api.artSetUrl(game.id, art, link.trim(), null, version))}>Use link</button>
       </div>
 
       <div class="sgdb">
         <b>From a web page</b>
         <p class="muted small">Paste the game's page (SFGHQ showcase, itch.io…) and click a picture.</p>
-        <PagePictures {page} onpick={(urls) => save(api.artSetUrl(game.id, art, urls[0], null))} />
+        <PagePictures {page} onpick={(urls) => save(api.artSetUrl(game.id, art, urls[0], null, version))} />
       </div>
 
       <div class="sgdb">
@@ -145,12 +147,12 @@
   .find { display: flex; gap: 8px; margin: 10px 0; }
   .results { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
   .chip { padding: 5px 11px; border-radius: 99px; border: 1px solid var(--line-2); background: var(--bg-2); color: var(--muted); cursor: pointer; font-size: 12.5px; }
-  .chip.on { background: rgba(75, 147, 255, .2); border-color: var(--accent); color: var(--text); }
+  .chip.on { background: rgba(var(--accent-rgb), .2); border-color: var(--accent); color: var(--text); }
   .thumbs { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
   .thumbs.hero { grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
   .thumbs.logo { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
   .thumbs.icon { grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); }
-  .thumb { padding: 0; border: 2px solid transparent; border-radius: 9px; overflow: hidden; cursor: pointer; background: repeating-conic-gradient(#121c30 0 25%, #0f1828 0 50%) 0 0 / 16px 16px; transition: transform .12s, border-color .12s; }
+  .thumb { padding: 0; border: 2px solid transparent; border-radius: var(--r); overflow: hidden; cursor: pointer; background: repeating-conic-gradient(var(--panel) 0 25%, var(--bg-2) 0 50%) 0 0 / 16px 16px; transition: transform .12s, border-color .12s; }
   .thumb:hover { border-color: var(--accent); transform: translateY(-2px); }
   .thumb img { width: 100%; display: block; }
   .thumbs.cover .thumb img { aspect-ratio: 2 / 3; object-fit: cover; }

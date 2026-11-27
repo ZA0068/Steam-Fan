@@ -1,4 +1,5 @@
 :root {
+  /* the default look; a theme (Settings > Appearance) overrides these on <html> */
   --bg: #0a111e;
   --bg-2: #0e1727;
   --panel: #121d31;
@@ -14,11 +15,27 @@
   --good: #46d68f;
   --warn: #f3b94c;
   --bad: #ff6f6f;
+  --sidebar: #0d1628;
+  --hover: #1d2e4f;
+  --accent-text: #cfe2ff;
+  --on-accent: #ffffff;
+  --bg-rgb: 10, 17, 30;
+  --panel-rgb: 18, 29, 49;
+  --panel-2-rgb: 31, 55, 95;
+  --accent-rgb: 75, 147, 255;
+  --accent-2-rgb: 42, 107, 179;
+  --good-rgb: 70, 214, 143;
+  --warn-rgb: 243, 185, 76;
+  --bad-rgb: 255, 111, 111;
+  --glow: 1;
   --radius: 12px;
+  --r: 9px;
+  --font-size: 14px;
+  --font: "Inter", "Noto Sans", "Segoe UI", system-ui, sans-serif;
   --shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
   color-scheme: dark;
-  font-family: "Inter", "Noto Sans", "Segoe UI", system-ui, sans-serif;
-  font-size: 14px;
+  font-family: var(--font);
+  font-size: var(--font-size);
   color: var(--text);
   background: var(--bg);
 }
@@ -33,15 +50,15 @@ input, textarea, select, button { font: inherit; color: inherit; }
 
 .btn {
   display: inline-flex; align-items: center; gap: 8px;
-  padding: 8px 14px; border-radius: 9px; border: 1px solid var(--line-2);
+  padding: 8px 14px; border-radius: var(--r); border: 1px solid var(--line-2);
   background: var(--panel-2); cursor: pointer; white-space: nowrap;
   transition: background .15s, border-color .15s, transform .05s, opacity .15s;
 }
-.btn:hover { background: #1d2e4f; border-color: #3a5282; }
+.btn:hover { background: var(--hover); border-color: rgba(var(--accent-rgb), .45); }
 .btn:active { transform: translateY(1px); }
 .btn:disabled { opacity: .45; cursor: not-allowed; }
-.btn.primary { background: linear-gradient(180deg, #4b93ff, #2f72e0); border-color: #5a9cff; color: white; font-weight: 600; }
-.btn.primary:hover { background: linear-gradient(180deg, #5aa0ff, #3a7cec); }
+.btn.primary { background: linear-gradient(180deg, var(--accent), rgba(var(--accent-2-rgb), 1)); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+.btn.primary:hover { background: linear-gradient(180deg, var(--accent), var(--accent)); filter: brightness(1.08); }
 .btn.play { background: linear-gradient(180deg, #4fdb8f, #27b46b); border-color: #63e39d; color: #04210f; font-weight: 700; }
 .btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
 .btn.ghost:hover { background: var(--panel-2); color: var(--text); }
@@ -49,26 +66,26 @@ input, textarea, select, button { font: inherit; color: inherit; }
 .btn.small { padding: 5px 10px; font-size: 12.5px; border-radius: 7px; }
 
 .input {
-  width: 100%; padding: 9px 12px; border-radius: 9px; border: 1px solid var(--line-2);
+  width: 100%; padding: 9px 12px; border-radius: var(--r); border: 1px solid var(--line-2);
   background: var(--bg-2); outline: none; user-select: text;
 }
-.input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(75, 147, 255, .18); }
+.input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(var(--accent-rgb), .18); }
 label.field { display: grid; gap: 6px; font-size: 12.5px; color: var(--muted); }
 label.field > span { font-weight: 500; }
 
 .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 99px; font-size: 12px; background: var(--panel-2); color: var(--muted); border: 1px solid var(--line); }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
-.dot.good { background: var(--good); box-shadow: 0 0 8px rgba(70, 214, 143, .6); }
+.dot.good { background: var(--good); box-shadow: 0 0 8px rgba(var(--good-rgb), .6); }
 .dot.warn { background: var(--warn); }
 .dot.bad { background: var(--bad); }
-.dot.blue { background: var(--accent); box-shadow: 0 0 8px rgba(75, 147, 255, .6); }
+.dot.blue { background: var(--accent); box-shadow: 0 0 8px rgba(var(--accent-rgb), .6); }
 
 .muted { color: var(--muted); }
 .faint { color: var(--faint); }
 .mono { font-family: "JetBrains Mono", "Fira Code", ui-monospace, monospace; font-size: 12px; user-select: text; word-break: break-all; }
 
-.overlay { position: fixed; inset: 0; background: rgba(4, 8, 16, .66); backdrop-filter: blur(6px); display: grid; place-items: center; z-index: 50; animation: fade .15s ease-out; }
-.modal { width: min(760px, calc(100vw - 48px)); max-height: calc(100vh - 64px); overflow: auto; background: var(--panel); border: 1px solid var(--line-2); border-radius: 16px; box-shadow: var(--shadow); animation: pop .18s ease-out; }
+.overlay { position: fixed; inset: 0; background: rgba(var(--bg-rgb), .66); backdrop-filter: blur(6px); display: grid; place-items: center; z-index: 50; animation: fade .15s ease-out; }
+.modal { width: min(760px, calc(100vw - 48px)); max-height: calc(100vh - 64px); overflow: auto; background: var(--panel); border: 1px solid var(--line-2); border-radius: calc(var(--radius) + 4px); box-shadow: var(--shadow); animation: pop .18s ease-out; }
 .modal header { display: flex; align-items: center; justify-content: space-between; padding: 18px 22px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--panel); z-index: 1; }
 .modal header h2 { margin: 0; font-size: 17px; }
 .modal .body { padding: 20px 22px; }
@@ -77,3 +94,10 @@ label.field > span { font-weight: 500; }
 @keyframes fade { from { opacity: 0 } }
 @keyframes pop { from { opacity: 0; transform: scale(.97) translateY(6px) } }
 @keyframes rise { from { opacity: 0; transform: translateY(10px) } }
+
+/* layout choices from Settings > Appearance (classes on <html>) */
+html.compact { --font-size: 13px; }
+html.compact .btn { padding: 6px 11px; }
+html.compact .input { padding: 7px 10px; }
+html.roomy { --font-size: 15px; }
+html.roomy .btn { padding: 10px 16px; }

@@ -181,9 +181,25 @@ impl Config {
         shelf_online(&self.shelf())
     }
 
-    /// The shelf is Steam-Fan-Server, not a folder.
+    /// The shelf is Steam-Fan-Server, not a folder. When no server address answers but the
+    /// shelf folder is mounted, the folder is used instead (the server keeps its files there too).
     pub fn server_mode(&self) -> bool {
-        !self.servers.is_empty()
+        if self.servers.is_empty() {
+            return false;
+        }
+        crate::remote::active(self).is_some() || !shelf_online(&self.shelf())
+    }
+
+    /// How the shelf is reached right now, in words.
+    pub fn shelf_via(&self) -> String {
+        if self.servers.is_empty() {
+            return format!("folder {}", self.shelf().display());
+        }
+        match crate::remote::active(self) {
+            Some(s) => format!("Steam-Fan-Server at {}", s.base),
+            None if shelf_online(&self.shelf()) => format!("folder {} (the server isn't answering)", self.shelf().display()),
+            None => "nothing: the server isn't answering and the shelf folder isn't mounted".into(),
+        }
     }
 
     /// Where game saves are kept: on the shelf, or (with a server) in this PC's copy of the
@@ -209,6 +225,20 @@ pub fn data_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn falls_back_to_the_mounted_shelf_when_no_server_answers() {
+        let t = tempfile::tempdir().unwrap();
+        let mut c = Config { shelf: t.path().to_string_lossy().into(), ..Default::default() };
+        c.servers = vec!["http://127.0.0.1:9".into()]; // nothing listens there
+        crate::remote::forget();
+        assert!(c.server_mode(), "no server and no shelf folder: still the server's (offline)");
+        std::fs::create_dir_all(t.path().join("fangames")).unwrap();
+        assert!(!c.server_mode(), "the shelf folder is there: use it");
+        assert!(c.shelf_online());
+        assert!(c.shelf_via().contains("isn't answering"), "{}", c.shelf_via());
+        crate::remote::forget();
+    }
     #[test]
     fn defaults_round_trip() {
         let c = Config::default();

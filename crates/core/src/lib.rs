@@ -12,6 +12,7 @@ pub mod import;
 pub mod integrity;
 pub mod launch;
 pub mod library;
+pub mod own;
 pub mod platform;
 pub mod remote;
 pub mod saves;
@@ -41,4 +42,11 @@ pub fn now_stamp() -> String {
 /// A desktop notification, if `notify-send` is installed. Never fails.
 pub fn notify(title: &str, body: &str) {
     platform::notify(title, body)
+}
+
+/// Tests that point XDG_* or HOME somewhere else hold this, so they don't run into each other.
+#[cfg(test)]
+pub(crate) fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }

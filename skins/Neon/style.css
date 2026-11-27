@@ -1,0 +1,13 @@
+/* Neon: an example skin. Everything here is plain CSS on top of Steam-Fan's own.
+   Theme variables you can use: --bg --bg-2 --panel --panel-2 --line --line-2 --text --muted
+   --faint --accent --accent-2 --good --warn --bad --sidebar --radius --r --font --font-size,
+   and --accent-rgb / --bg-rgb / --panel-rgb for rgba(var(--accent-rgb), .5).
+   url(...) is relative to this folder: url(bg.jpg), url(fonts/MyFont.woff2). */
+
+h1, h3 { text-shadow: 0 0 12px rgba(var(--accent-rgb), .55); }
+
+.card .art { border: 1px solid rgba(var(--accent-rgb), .35); }
+.card:hover .art { box-shadow: 0 0 24px rgba(var(--accent-rgb), .6), 0 0 0 2px var(--accent) !important; }
+.card .title { text-transform: uppercase; letter-spacing: .8px; font-size: 12px; }
+
+.btn.play { background: linear-gradient(180deg, #3dffb0, #12c987); color: #03140c; }

@@ -431,6 +431,7 @@ mod tests {
 
     #[test]
     fn verify_repairs_the_pc_copy_and_never_the_shelf() {
+        let _env = crate::env_lock();
         let t = tempfile::tempdir().unwrap();
         let r = t.path();
         std::env::set_var("XDG_DATA_HOME", r.join("data"));

@@ -89,8 +89,8 @@
 
 <style>
   .kinds { display: flex; gap: 8px; margin: 14px 0; }
-  .kind { padding: 9px 14px; border-radius: 10px; border: 1px solid var(--line-2); background: var(--bg-2); color: var(--text); cursor: pointer; }
-  .kind.on { border-color: var(--accent); background: rgba(75, 147, 255, .12); }
+  .kind { padding: 9px 14px; border-radius: var(--r); border: 1px solid var(--line-2); background: var(--bg-2); color: var(--text); cursor: pointer; }
+  .kind.on { border-color: var(--accent); background: rgba(var(--accent-rgb), .12); }
   .fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
   .small { font-size: 12px; margin-top: 8px; }
   .ver { margin-top: 12px; }

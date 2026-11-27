@@ -152,18 +152,18 @@
 </div>
 
 <style>
-  .drop { border: 2px dashed var(--line-2); border-radius: 14px; padding: 34px 20px; text-align: center; background: var(--bg-2); }
+  .drop { border: 2px dashed var(--line-2); border-radius: calc(var(--radius) + 2px); padding: 34px 20px; text-align: center; background: var(--bg-2); }
   .drop img { width: 70px; }
   .drop h3 { margin: 10px 0 4px; }
   .row { display: flex; gap: 10px; justify-content: center; margin-top: 16px; }
-  .source { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 12px; background: var(--bg-2); border: 1px solid var(--line); }
+  .source { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: var(--radius); background: var(--bg-2); border: 1px solid var(--line); }
   .source .ic { font-size: 22px; }
   .source > div { flex: 1; min-width: 0; }
   .source .faint { font-size: 12px; margin-top: 3px; }
   .kinds { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 18px 0; }
-  .kind { display: grid; gap: 4px; padding: 12px; text-align: left; border-radius: 12px; border: 1px solid var(--line-2); background: var(--bg-2); cursor: pointer; color: var(--text); }
+  .kind { display: grid; gap: 4px; padding: 12px; text-align: left; border-radius: var(--radius); border: 1px solid var(--line-2); background: var(--bg-2); cursor: pointer; color: var(--text); }
   .kind span { font-size: 12px; color: var(--faint); }
-  .kind.on { border-color: var(--accent); background: rgba(75, 147, 255, .12); box-shadow: 0 0 0 3px rgba(75, 147, 255, .12); }
+  .kind.on { border-color: var(--accent); background: rgba(var(--accent-rgb), .12); box-shadow: 0 0 0 3px rgba(var(--accent-rgb), .12); }
   .fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   .version { margin-top: 12px; }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }

@@ -1,0 +1,21 @@
+{
+  "name": "Neon",
+  "author": "Steam-Fan",
+  "description": "An example skin to copy: neon colors, a custom icon, and a stylesheet.",
+  "theme": {
+    "colors": { "bg": "#0a0612", "panel": "#160d26", "text": "#f6ecff", "accent": "#ff2bd6", "good": "#3dffb0" },
+    "radius": 6,
+    "font_size": 14,
+    "font": "",
+    "density": "normal",
+    "sidebar": "left",
+    "glow": true
+  },
+  "layout": "grid",
+  "cover": 170,
+  "icon_set": "line",
+  "icons": {
+    "play": "icons/play.svg",
+    "fan": "✦"
+  }
+}

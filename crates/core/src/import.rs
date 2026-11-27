@@ -334,6 +334,7 @@ mod tests {
 
     #[test]
     fn zip_import() {
+        let _env = crate::env_lock();
         let t = tempfile::tempdir().unwrap();
         std::env::set_var("XDG_CACHE_HOME", t.path().join("cache"));
         let shelf = t.path().join("shelf");

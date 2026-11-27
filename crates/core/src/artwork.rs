@@ -71,9 +71,9 @@ impl Art {
     }
 }
 
-const EXTS: [&str; 4] = ["png", "jpg", "jpeg", "webp"];
+pub(crate) const EXTS: [&str; 4] = ["png", "jpg", "jpeg", "webp"];
 
-fn is_image(name: &str) -> Option<&'static str> {
+pub(crate) fn is_image(name: &str) -> Option<&'static str> {
     let l = name.to_lowercase();
     EXTS.iter().copied().find(|e| l.ends_with(&format!(".{e}")))
 }
@@ -137,7 +137,7 @@ pub fn adopt_version_art(cfg: &Config, title: &Game, versions: &[Game]) -> bool 
     false
 }
 
-fn pictures_in(dir: &Path) -> Vec<(String, PathBuf)> {
+pub(crate) fn pictures_in(dir: &Path) -> Vec<(String, PathBuf)> {
     listing(dir)
         .map(|l| {
             l.into_iter()
@@ -152,8 +152,13 @@ fn pictures_in(dir: &Path) -> Vec<(String, PathBuf)> {
         .unwrap_or_default()
 }
 
-fn pick(pics: &[(String, PathBuf)], stems: &[&str]) -> Option<PathBuf> {
+pub(crate) fn pick(pics: &[(String, PathBuf)], stems: &[&str]) -> Option<PathBuf> {
     stems.iter().find_map(|s| pics.iter().find(|(stem, _)| stem == s).map(|(_, p)| p.clone()))
+}
+
+/// A picture of this kind in a folder.
+pub fn pick_in(dir: &Path, art: Art) -> Option<PathBuf> {
+    pick(&pictures_in(dir), &[art.name()])
 }
 
 /// The picture on this PC, if there is one (fast: no network).
@@ -194,7 +199,7 @@ pub fn on_shelf(cfg: &Config, g: &Game, art: Art) -> Option<PathBuf> {
     shelf_pictures(cfg, g).into_iter().find(|(a, _)| *a == art).map(|(_, p)| p)
 }
 
-fn same_file(a: &Path, b: &Path) -> bool {
+pub(crate) fn same_file(a: &Path, b: &Path) -> bool {
     match (fs::metadata(a), fs::metadata(b)) {
         (Ok(x), Ok(y)) => x.len() == y.len() && x.modified().ok() <= y.modified().ok(),
         _ => false,
@@ -597,6 +602,7 @@ mod tests {
 
     #[test]
     fn store_and_find() {
+        let _env = crate::env_lock();
         let t = tempfile::tempdir().unwrap();
         std::env::set_var("HOME", t.path());
         std::env::set_var("XDG_DATA_HOME", t.path().join("data"));
@@ -665,6 +671,9 @@ pub struct Info {
     /// from the version names and program dates.
     #[serde(default)]
     pub newest_version: String,
+    /// Soft groups: collections the game is in, without moving its folder.
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 /// The info on this PC (copied from the shelf), or empty.

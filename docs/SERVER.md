@@ -153,4 +153,7 @@ With a server address in Settings, the app works through the server:
 - **Add game, Re-download, Check for update, Move, Versions**: these are requests. The server does the work and patches the shelf.
 - **Verify**: checks this PC's copy against the server's manifest and downloads the bad files again. It never changes the shelf.
 - **Archived Steam games** still use the shelf folder, so mount it for those.
-- With no server answering, games that are already on the PC still play.
+- **No server answering, but the share is mounted** (Settings → Shelf): the app uses the share directly until the server is back.
+  The server keeps its files on that same share, so nothing is lost: the server sees the changes at its next scan, and saves are matched by date.
+- **No server and no share:** games that are already on the PC still play.
+- **Find on my network** (Settings, or `steam-fan server find`) looks for the server on your home network, so you don't need to know its address. Tailscale addresses still have to be typed in.

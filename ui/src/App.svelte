@@ -7,6 +7,7 @@
   import Settings from "./lib/Settings.svelte";
   import AddGame from "./lib/AddGame.svelte";
   import Jobs from "./lib/Jobs.svelte";
+  import * as theme from "./lib/theme.js";
 
   let lib = $state({ games: [], shelf: "", unknown_systems: [], has_sgdb_key: false, configured: true });
   let status = $state({ shelf_online: false, steam_running: false });
@@ -58,7 +59,9 @@
   const busy = $derived(jobs.some((j) => !j.done));
   const game = $derived(lib.games.find((g) => g.id === selected) ?? null);
 
-  const titles = { all: "Library", pc: "On this PC", Fan: "Fan games", NonSteam: "Non-Steam games", Rom: "Emulator games", Steam: "Steam archive" };
+  const titles = { all: "Library", pc: "On this PC", tags: "Collections", Fan: "Fan games", NonSteam: "Non-Steam games", Rom: "Emulator games", Steam: "Steam archive" };
+  // soft groups: every collection name in use
+  const allTags = $derived([...new Set(lib.games.flatMap((g) => g.tags ?? []))].sort((a, b) => a.localeCompare(b)));
   const filters = { shelf: "Only on the shelf", windows: "Windows · Proton", linux: "Linux" };
   // the path shown next to the arrows; every part but the last can be clicked
   const crumbs = $derived.by(() => {
@@ -78,7 +81,26 @@
   });
 
   // mouse side buttons and Alt+←/→, like Steam and browsers
+  // Ctrl+Shift+0 (⌘⇧0 on a Mac): back to the default look, whatever a theme did
+  let toast = $state("");
+  async function defaultLook() {
+    theme.apply(theme.DEFAULT);
+    try {
+      await theme.save(theme.DEFAULT);
+      toast = "Default look restored. Settings › Appearance › Undo last save brings yours back.";
+    } catch {
+      toast = "Default look for now (it couldn't be saved)";
+    }
+    window.dispatchEvent(new Event("sf-theme-reset"));
+    setTimeout(() => (toast = ""), 6000);
+  }
+
   function onkey(e) {
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.code === "Digit0") {
+      e.preventDefault();
+      defaultLook();
+      return;
+    }
     if (!e.altKey || e.ctrlKey || e.metaKey) return;
     if (e.key === "ArrowLeft") { e.preventDefault(); back(); }
     if (e.key === "ArrowRight") { e.preventDefault(); forward(); }
@@ -149,6 +171,7 @@
       {:else if game}
         <Details
           {game}
+          {allTags}
           {status}
           {busy}
           tab={here.tab}
@@ -205,12 +228,20 @@
 
 <Jobs {jobs} oncancel={(id) => api.cancelJob(id)} />
 
+{#if toast}
+  <div style="position:fixed !important;left:50% !important;top:18px !important;transform:translateX(-50%) !important;z-index:2147483647 !important;padding:10px 16px !important;background:#101826 !important;color:#fff !important;border:2px solid #4b93ff !important;border-radius:12px !important;font:14px system-ui,sans-serif !important;display:block !important;visibility:visible !important;opacity:1 !important;">{toast}</div>
+{/if}
+
 <style>
-  .shell { display: grid; grid-template-columns: 232px 1fr; height: 100vh; }
+  .shell { display: grid; grid-template-columns: var(--sidebar-w, 232px) 1fr; height: 100vh; }
+  /* sidebar on the right: same grid, other order */
+  :global(html.side-right) .shell { grid-template-columns: 1fr var(--sidebar-w, 232px); }
+  :global(html.side-right) .shell > main { order: -1; }
+  :global(html.side-icons) { --sidebar-w: 64px; }
   main { display: flex; flex-direction: column; }
   .view { flex: 1; min-height: 0; position: relative; }
-  .topnav { display: flex; align-items: center; gap: 4px; height: 42px; padding: 0 16px; border-bottom: 1px solid var(--line); background: rgba(10, 17, 30, .6); flex: none; }
-  .arrow { width: 30px; height: 30px; border: 0; border-radius: 8px; background: transparent; color: var(--text); font-size: 22px; line-height: 1; cursor: pointer; display: grid; place-items: center; padding-bottom: 3px; }
+  .topnav { display: flex; align-items: center; gap: 4px; height: 42px; padding: 0 16px; border-bottom: 1px solid var(--line); background: rgba(var(--bg-rgb), .6); flex: none; }
+  .arrow { width: 30px; height: 30px; border: 0; border-radius: var(--r); background: transparent; color: var(--text); font-size: 22px; line-height: 1; cursor: pointer; display: grid; place-items: center; padding-bottom: 3px; }
   .arrow:hover:not(:disabled) { background: var(--panel); }
   .arrow:disabled { color: var(--faint); opacity: .45; cursor: default; }
   .crumbs { display: flex; align-items: center; gap: 2px; margin-left: 10px; min-width: 0; overflow: hidden; white-space: nowrap; font-size: 13px; }
@@ -218,8 +249,8 @@
   button.crumb:hover { color: var(--text); background: var(--panel); }
   .crumb.here { color: var(--text); cursor: default; font-weight: 600; }
   .sep { color: var(--faint); }
-  main { min-width: 0; overflow: hidden; position: relative; background: radial-gradient(1200px 600px at 70% -10%, rgba(42, 107, 179, 0.12), transparent 60%), var(--bg); }
-  .dropping { position: fixed; inset: 10px; border: 2px dashed var(--accent); border-radius: 18px; background: rgba(10, 17, 30, 0.85); display: grid; place-items: center; text-align: center; z-index: 60; pointer-events: none; animation: fade .12s; }
+  main { min-width: 0; overflow: hidden; position: relative; background: radial-gradient(1200px 600px at 70% -10%, rgba(var(--accent-2-rgb), calc(0.12 * var(--glow))), transparent 60%), var(--bg); }
+  .dropping { position: fixed; inset: 10px; border: 2px dashed var(--accent); border-radius: calc(var(--radius) + 6px); background: rgba(var(--bg-rgb), 0.85); display: grid; place-items: center; text-align: center; z-index: 60; pointer-events: none; animation: fade .12s; }
   .dropping img { width: 88px; opacity: .9; }
   .dropping h2 { margin: 14px 0 6px; }
 </style>

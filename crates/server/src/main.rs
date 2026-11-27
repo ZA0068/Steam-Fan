@@ -298,6 +298,13 @@ async fn set_version(State(app): State<App>, Json(r): Json<SetVersionReq>) -> Re
 #[derive(Deserialize)]
 struct IdQ {
     id: String,
+    /// `own=1`: a version's own pictures or info, not its game's
+    #[serde(default)]
+    own: Option<String>,
+}
+
+fn is_own(o: &Option<String>) -> bool {
+    o.as_deref().map_or(false, |v| !v.is_empty() && v != "0" && v != "false")
 }
 
 #[derive(Serialize)]
@@ -447,12 +454,22 @@ struct ArtQ {
     /// a screenshot's file name
     #[serde(default)]
     shot: String,
+    /// `own=1`: the version's own picture
+    #[serde(default)]
+    own: Option<String>,
 }
 
 async fn art_get(State(app): State<App>, Query(q): Query<ArtQ>, req: Request) -> Res<Response> {
     let cfg = app.cfg.clone();
     let p = blocking(move || {
         let g = find(&cfg, &q.id)?;
+        if is_own(&q.own) {
+            let a = parse_art(&q.kind)?;
+            if steam_fan_core::own::local(&g, a).is_none() {
+                steam_fan_core::own::mirror(&cfg, &g);
+            }
+            return steam_fan_core::own::local(&g, a).context("no such picture");
+        }
         let pick = |g: &Game| -> Result<Option<PathBuf>> {
             if !q.shot.is_empty() {
                 if q.shot.contains('/') || q.shot.starts_with('.') {
@@ -480,6 +497,11 @@ async fn art_put(State(app): State<App>, Query(q): Query<ArtQ>, body: Bytes) -> 
     let cfg = app.cfg.clone();
     blocking(move || {
         let g = find(&cfg, &q.id)?;
+        if is_own(&q.own) {
+            steam_fan_core::own::store(&cfg, &g, parse_art(&q.kind)?, &body)?;
+            Db::open_default()?.log(&g.id, &format!("{} picture set for {}", q.kind, g.version_label()));
+            return Ok(Json("saved"));
+        }
         artwork::store(&cfg, &g, parse_art(&q.kind)?, &body)?;
         Db::open_default()?.log(&g.id, &format!("{} picture set", q.kind));
         Ok(Json("saved"))
@@ -491,6 +513,10 @@ async fn art_delete(State(app): State<App>, Query(q): Query<ArtQ>) -> Res<Json<&
     let cfg = app.cfg.clone();
     blocking(move || {
         let g = find(&cfg, &q.id)?;
+        if is_own(&q.own) {
+            steam_fan_core::own::remove(&cfg, &g, parse_art(&q.kind)?)?;
+            return Ok(Json("removed"));
+        }
         artwork::remove(&cfg, &g, parse_art(&q.kind)?)?;
         Ok(Json("removed"))
     })
@@ -558,7 +584,12 @@ async fn screenshots_from_urls(State(app): State<App>, Json(r): Json<ShotsReq>) 
 async fn info_put(State(app): State<App>, Query(q): Query<IdQ>, Json(info): Json<Info>) -> Res<Json<&'static str>> {
     let cfg = app.cfg.clone();
     blocking(move || {
-        artwork::save_info(&cfg, &find(&cfg, &q.id)?, &info)?;
+        let g = find(&cfg, &q.id)?;
+        if is_own(&q.own) {
+            steam_fan_core::own::save_info(&cfg, &g, &info)?;
+        } else {
+            artwork::save_info(&cfg, &g, &info)?;
+        }
         Ok(Json("saved"))
     })
     .await
@@ -870,6 +901,16 @@ async fn add_url(State(app): State<App>, Json(r): Json<AddUrlReq>) -> Res<Json<S
             let mut db = Db::open_default()?;
             let games = after_place(&cfg, &mut db, &dst, &sums, &ctx, "downloaded from its link")?;
             for g in &games {
+                if !g.version.is_empty() {
+                    // a version added from its own link keeps the link for itself
+                    let mut own = steam_fan_core::own::info(g);
+                    own.download = url.clone();
+                    if !r.page.trim().is_empty() {
+                        own.page = r.page.trim().to_string();
+                    }
+                    steam_fan_core::own::save_info(&cfg, g, &own)?;
+                    continue;
+                }
                 let mut info = artwork::info(g);
                 info.download = url.clone();
                 if !r.page.trim().is_empty() {
@@ -931,6 +972,8 @@ struct Snapshot {
     art: std::collections::BTreeMap<String, Vec<(Art, i64)>>,
     /// Screenshot file names of each entry.
     screenshots: std::collections::BTreeMap<String, Vec<String>>,
+    /// Each version's own info and pictures, by the version's id (only versions that have some).
+    own: std::collections::BTreeMap<String, (Info, Vec<(Art, i64)>)>,
 }
 
 /// One entry's info, pictures (with dates) and screenshots.
@@ -950,8 +993,15 @@ async fn snapshot() -> Res<Json<Snapshot>> {
         let games = Db::open_default()?.games()?;
         let mut info: std::collections::BTreeMap<String, Info> = Default::default();
         let (mut art, mut screenshots) = (std::collections::BTreeMap::new(), std::collections::BTreeMap::new());
+        let mut own = std::collections::BTreeMap::new();
         for t in library::titles(games.clone()) {
             let id = t.id();
+            for v in &t.versions {
+                let (i, pics) = steam_fan_core::own::parts(v);
+                if i != Info::default() || !pics.is_empty() {
+                    own.insert(v.id.clone(), (i, pics));
+                }
+            }
             let (i, pics, shots) = entry_parts(&t.game);
             if i != Info::default() {
                 info.insert(id.clone(), i);
@@ -963,7 +1013,7 @@ async fn snapshot() -> Res<Json<Snapshot>> {
                 screenshots.insert(id, shots);
             }
         }
-        Ok(Json(Snapshot { version: VERSION, games, info, art, screenshots }))
+        Ok(Json(Snapshot { version: VERSION, games, info, art, screenshots, own }))
     })
     .await
 }
@@ -979,6 +1029,10 @@ struct Entry {
 async fn entry(State(app): State<App>, Query(q): Query<IdQ>) -> Res<Json<Entry>> {
     blocking(move || {
         let g = find(&app.cfg, &q.id)?;
+        if is_own(&q.own) {
+            let (info, art) = steam_fan_core::own::parts(&g);
+            return Ok(Json(Entry { info, art, screenshots: vec![] }));
+        }
         let (info, art, screenshots) = entry_parts(&g);
         Ok(Json(Entry { info, art, screenshots }))
     })

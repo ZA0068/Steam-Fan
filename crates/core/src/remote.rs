@@ -77,6 +77,48 @@ pub fn active(cfg: &Config) -> Option<Server> {
     found.map(|base| Server { base, token: secrets::get(TOKEN) })
 }
 
+/// Look for Steam-Fan-Servers on this PC's home network: every address next to this PC's
+/// (the same /24, on each network it's on) is asked on port 8484, all at once. A second or two.
+pub fn discover() -> Vec<String> {
+    use std::net::IpAddr;
+    // every home-network address of this PC (wired, Wi-Fi; a VPN's own address is skipped
+    // unless it's in a private range too, which only costs a few more quick knocks)
+    let mut nets: Vec<[u8; 3]> = if_addrs::get_if_addrs()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|i| !i.is_loopback())
+        .filter_map(|i| match i.ip() {
+            IpAddr::V4(v) if v.is_private() => {
+                let [a, b, c, _] = v.octets();
+                Some([a, b, c])
+            }
+            _ => None,
+        })
+        .collect();
+    nets.sort();
+    nets.dedup();
+    nets.truncate(4);
+    let probe = ureq::AgentBuilder::new().timeout_connect(Duration::from_millis(700)).timeout_read(Duration::from_secs(2)).build();
+    let found = Mutex::new(Vec::new());
+    for [a, b, c] in nets {
+        std::thread::scope(|sc| {
+            for d in 1..=254u8 {
+                let (probe, found) = (&probe, &found);
+                sc.spawn(move || {
+                    let base = format!("http://{a}.{b}.{c}.{d}:8484");
+                    let ok = probe.get(&format!("{base}/api/health")).call().map_or(false, |r| r.into_string().map_or(false, |t| t.contains("Steam-Fan-Server")));
+                    if ok {
+                        found.lock().unwrap().push(([a, b, c, d], base));
+                    }
+                });
+            }
+        });
+    }
+    let mut v = found.into_inner().unwrap();
+    v.sort();
+    v.into_iter().map(|(_, b)| b).collect()
+}
+
 /// Forget which address answered (after the settings change).
 pub fn forget() {
     *ACTIVE.lock().unwrap() = None;
@@ -304,6 +346,9 @@ struct Snapshot {
     art: HashMap<String, Vec<(Art, i64)>>,
     #[serde(default)]
     screenshots: HashMap<String, Vec<String>>,
+    /// Each version's own info and pictures, by the version's id.
+    #[serde(default)]
+    own: HashMap<String, (Info, Vec<(Art, i64)>)>,
 }
 
 const REMOTE_ART: &str = "server-art.json";
@@ -336,6 +381,10 @@ pub fn refresh(cfg: &Config, db: &mut Db) -> Result<crate::library::RefreshRepor
         }
         fs::write(dir.join(REMOTE_ART), serde_json::to_string(snap.art.get(&id).unwrap_or(&vec![]))?)?;
         fs::write(dir.join(REMOTE_SHOTS), serde_json::to_string(snap.screenshots.get(&id).unwrap_or(&vec![]))?)?;
+        for v in &t.versions {
+            let (i, a) = snap.own.get(&v.id).cloned().unwrap_or_default();
+            crate::own::remember_remote(v, &i, &a)?;
+        }
     }
     Ok(crate::library::RefreshReport { complete: true, games: n, ..Default::default() })
 }
@@ -401,6 +450,19 @@ pub fn update_entry(cfg: &Config, g: &Game) -> Result<()> {
     fs::write(dir.join(REMOTE_ART), serde_json::to_string(&e.art)?)?;
     fs::write(dir.join(REMOTE_SHOTS), serde_json::to_string(&e.screenshots)?)?;
     fetch_art(cfg, g)?;
+    Ok(())
+}
+
+/// After a version's own pictures or info changed: what the server has for it now.
+pub fn update_own(cfg: &Config, v: &Game) -> Result<()> {
+    #[derive(Deserialize)]
+    struct Own {
+        info: Info,
+        art: Vec<(Art, i64)>,
+    }
+    let o: Own = require(cfg)?.get_json(&format!("/entry?id={}&own=1", q(&v.id)))?;
+    crate::own::remember_remote(v, &o.info, &o.art)?;
+    crate::own::fetch(cfg, v)?;
     Ok(())
 }
 

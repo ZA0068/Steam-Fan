@@ -109,6 +109,8 @@ enum ServerCmd {
     Remove { url: String },
     /// The addresses and which one answers.
     Status,
+    /// Look for Steam-Fan-Servers on the home network.
+    Find,
 }
 
 #[derive(Subcommand)]
@@ -187,14 +189,22 @@ fn server(cmd: ServerCmd) -> anyhow::Result<()> {
             cfg.servers.retain(|s| *s != url);
             cfg.save()?;
         }
+        ServerCmd::Find => {
+            let found = remote::discover();
+            if found.is_empty() {
+                println!("No Steam-Fan-Server answered on this network (Tailscale addresses aren't searched).");
+            }
+            for f in found {
+                println!("{f}{}", if cfg.servers.contains(&f) { "  (in use)" } else { "" });
+            }
+        }
         ServerCmd::Status => {
             if cfg.servers.is_empty() {
                 println!("No server: games come from the shelf folder {}", cfg.shelf().display());
             }
-            match remote::active(&cfg) {
-                Some(s) => println!("Using {}", s.base),
-                None if !cfg.servers.is_empty() => println!("No answer from {}", cfg.servers.join(", ")),
-                None => {}
+            if !cfg.servers.is_empty() {
+                println!("Addresses: {}", cfg.servers.join(", "));
+                println!("The shelf is reached through: {}", cfg.shelf_via());
             }
         }
     }

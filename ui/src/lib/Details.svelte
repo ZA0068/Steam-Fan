@@ -4,8 +4,50 @@
   import ArtPicker from "./ArtPicker.svelte";
   import Gallery from "./Gallery.svelte";
   import Move from "./Move.svelte";
+  import Icon from "./Icon.svelte";
 
-  let { game, status, busy, hasKey, tab = "overview", ontab, onnav, ondroptarget, onchanged, onmoved } = $props();
+  let { game, status, busy, hasKey, allTags = [], tab = "overview", ontab, onnav, ondroptarget, onchanged, onmoved } = $props();
+  // a game kept in versions: each version has a profile of its own (pictures, about);
+  // what it leaves empty comes from the newest version, then from the game
+  let viewFor = $state({ id: null, ver: null });
+  const ver = $derived(viewFor.id === game.id ? viewFor.ver : null);
+  const viewed = $derived(ver ? (game.versions?.find((v) => v.id === ver) ?? null) : null);
+  const shown = $derived(viewed ? { ...game, art: viewed.art } : game);
+  function view(id) {
+    viewFor = { id: game.id, ver: id };
+    editing = null;
+    updateMsg = "";
+  }
+  let adding = $state(null); // the Add version dialog
+  let tagging = $state(null); // the collection name being typed
+  async function addTag() {
+    const t = (tagging ?? "").trim();
+    if (!t) return;
+    await run(api.tagsSet(game.id, [...(game.tags ?? []), t]));
+    tagging = null;
+    onchanged();
+  }
+  async function addVersion() {
+    const a = $state.snapshot(adding);
+    error = "";
+    try {
+      await api.addVersion(game.id, a.version.trim(), a.current.trim(), a.how === "file" ? a.source : null, a.how === "link" ? a.url.trim() : null);
+      adding = null;
+    } catch (e) {
+      error = String(e);
+    }
+  }
+  // files dropped while the Add version dialog is open are the new version
+  $effect(() => {
+    if (!adding) return;
+    ondroptarget((paths) => {
+      if (paths?.[0] && adding) {
+        adding.source = paths[0];
+        adding.how = "file";
+      }
+    });
+    return () => ondroptarget(null);
+  });
   let moving = $state(false);
   let updateMsg = $state("");
   let redl = $state(null); // the re-download dialog
@@ -16,13 +58,14 @@
 
   async function loadInfo() {
     try {
-      info = await api.details(game.id);
+      info = await api.details(game.id, ver);
     } catch (e) {
       error = String(e);
     }
   }
   $effect(() => {
     game.id;
+    ver;
     loadInfo();
   });
   // pictures dropped on this page become screenshots (the artwork picker takes over while open)
@@ -40,7 +83,11 @@
     const i = $state.snapshot(editing);
     i.links = (i.linksText ?? "").split("\n").map((l) => l.trim()).filter(Boolean);
     delete i.linksText;
-    await run(api.infoSave(game.id, i));
+    if (viewed) {
+      for (const k of ["description", "developer", "released", "page", "download"]) i[k] = (i[k] ?? "").trim();
+    }
+    await run(api.infoSave(game.id, i, ver));
+    onchanged();
     editing = null;
     loadInfo();
   }
@@ -66,9 +113,8 @@
   // a game kept in several versions: Play uses the one chosen here (or the newest)
   let picker = $state(null);
   const newest = $derived(game.versions?.[0]);
-  // the version Verify, Check for update and Re-download work on (the one Play uses, unless picked)
-  let picked = $state(null);
-  const target = $derived(game.versions?.find((v) => v.id === picked) ?? game.versions?.find((v) => v.id === game.version_id) ?? null);
+  // the version Verify, Check for update and Re-download work on: the one shown, else the one Play uses
+  const target = $derived(viewed ?? game.versions?.find((v) => v.id === game.version_id) ?? null);
   const targetId = $derived(target?.id ?? game.id);
   async function markNewest() {
     error = "";
@@ -113,10 +159,10 @@
 
 <div class="page">
   <div class="hero">
-    {#if game.art.hero}
-      <img class="bg" src={game.art.hero} alt="" />
-    {:else if game.art.cover}
-      <img class="bg blur" src={game.art.cover} alt="" />
+    {#if shown.art.hero}
+      <img class="bg" src={shown.art.hero} alt="" />
+    {:else if shown.art.cover}
+      <img class="bg blur" src={shown.art.cover} alt="" />
     {:else}
       <div class="bg plain"></div>
     {/if}
@@ -124,18 +170,18 @@
     <div class="heroInner">
       {#if editable}
         <button class="poster edit" onclick={() => (picking = "cover")} title="Change the cover">
-          <Cover {game} size="big" /><span class="pen">✎ Cover</span>
+          <Cover game={shown} size="big" /><span class="pen">✎ Cover{viewed ? ` of ${viewed.label}` : ""}</span>
         </button>
       {:else}
-        <div class="poster"><Cover {game} size="big" /></div>
+        <div class="poster"><Cover game={shown} size="big" /></div>
       {/if}
       <div class="headline">
-        {#if game.art.logo && editable}
-          <button class="logoBtn edit" onclick={() => (picking = "logo")} title="Change the logo">
-            <img class="logo" src={game.art.logo} alt={game.name} /><span class="pen">✎ Logo</span>
+        {#if shown.art.logo && editable}
+          <button class="logoBtn edit" onclick={() => (picking = "logo")} title={viewed ? `Change ${viewed.label}'s logo` : "Change the logo"}>
+            <img class="logo" src={shown.art.logo} alt={game.name} /><span class="pen">✎ Logo{viewed ? ` of ${viewed.label}` : ""}</span>
           </button>
-        {:else if game.art.logo}
-          <img class="logo" src={game.art.logo} alt={game.name} />
+        {:else if shown.art.logo}
+          <img class="logo" src={shown.art.logo} alt={game.name} />
         {:else if editable}
           <button class="titleBtn edit" onclick={() => (moving = true)} title="Rename it, or move it to another group">
             <h1>{game.name}</h1><span class="pen">✎</span>
@@ -157,6 +203,33 @@
             <button class="pill link" onclick={() => onnav(game.kind, { filter: "shelf" })} title="Everything that's only on the shelf"><span class="dot"></span>On the shelf</button>
           {/if}
         </div>
+        {#if game.kind !== "Steam"}
+          <div class="tags">
+            {#each game.tags ?? [] as t}
+              <span class="tag"><button class="tagName" onclick={() => onnav("tags", { group: t })} title="Everything in {t}">🏷 {t}</button>{#if editable}<button class="tagX" title="Take it out of {t}" onclick={() => run(api.tagsSet(game.id, (game.tags ?? []).filter((x) => x !== t)).then(onchanged))}>✕</button>{/if}</span>
+            {/each}
+            {#if editable}
+              {#if tagging !== null}
+                <input class="input tagIn" list="sf-tags" placeholder="Collection name" bind:value={tagging} onkeydown={(e) => { if (e.key === "Enter") addTag(); if (e.key === "Escape") tagging = null; }} />
+                <datalist id="sf-tags">{#each allTags.filter((t) => !(game.tags ?? []).includes(t)) as t}<option value={t}></option>{/each}</datalist>
+                <button class="btn small" disabled={!tagging.trim()} onclick={addTag}>Add</button>
+              {:else}
+                <button class="tagAdd" onclick={() => (tagging = "")} title="Put it in a collection: a group by name only, nothing moves on the shelf">＋ Collection</button>
+              {/if}
+            {/if}
+          </div>
+        {/if}
+        {#if game.versions?.length}
+          <div class="vstrip" role="tablist" title="Each version has its own profile: pictures and about. What it leaves empty comes from the newest version, then the game.">
+            <button class:on={!viewed} onclick={() => view(null)}>The game</button>
+            {#each game.versions as v, i}
+              <button class:on={viewed?.id === v.id} onclick={() => view(v.id)}
+                title="{v.label}{i === 0 ? ' · newest' : ''}{v.id === game.version_id ? ' · Play uses it' : ''}{v.on_pc ? ' · on this PC' : ''}">
+                {v.label}{#if i === 0}<span class="vmark">★</span>{/if}{#if v.id === game.version_id}<span class="vmark">▶</span>{/if}{#if v.on_pc}<span class="dot good"></span>{/if}
+              </button>
+            {/each}
+          </div>
+        {/if}
         {#if game.versions?.length}
           <div class="vpick">
             <span class="faint">Version</span>
@@ -178,23 +251,36 @@
         {/if}
         <div class="buttons">
           {#if game.steam_id}
-            <button class="btn play" onclick={() => run(api.play(game.id))}>▶ Play</button>
+            <button class="btn play" onclick={() => run(api.play(game.id))}><Icon name="play" /> Play</button>
           {:else if game.kind !== "Steam"}
-            <button class="btn play" disabled title="Press Update Steam library first">▶ Play</button>
+            <button class="btn play" disabled title="Press Update Steam library first"><Icon name="play" /> Play</button>
           {/if}
           {#if game.kind === "Steam"}
             <button class="btn" disabled={busy || status.steam_running || !canRestore || !status.shelf_online} onclick={() => run(api.install(game.id))}
-              title={status.steam_running ? "Quit Steam first" : "Install this version into Steam, for when Steam's servers are down"}>⬇ Install from shelf</button>
+              title={status.steam_running ? "Quit Steam first" : "Install this version into Steam, for when Steam's servers are down"}><Icon name="download" /> Install from shelf</button>
             <button class="btn" disabled={busy || game.fresh_code !== "PcNewer" || !status.shelf_online} onclick={() => run(api.archiveUpload(game.id))}
               title="This PC has a newer version: put it on the shelf too">⬆ Copy to shelf</button>
+          {:else if viewed}
+            {#if viewed.id !== game.version_id}
+              <button class="btn" disabled={busy || !status.shelf_online} onclick={() => chooseVersion(viewed.folder)} title="Play (and Steam's entry) use {viewed.label} from now on"><Icon name="play" /> Play this version</button>
+            {/if}
+            {#if viewed.on_pc}
+              <button class="btn danger" disabled={busy} onclick={() => run(api.remove(viewed.id))} title="Saves go to the shelf first."><Icon name="remove" /> Remove {viewed.label} from PC</button>
+            {:else}
+              <button class="btn" disabled={busy || !status.shelf_online || !viewed.playable} onclick={() => run(api.install(viewed.id))}><Icon name="download" /> Copy {viewed.label} to this PC</button>
+            {/if}
           {:else if game.on_pc}
             <button class="btn danger" disabled={busy} onclick={() => run(api.remove(game.id))}
-              title="Saves go to the shelf first. It stays in Steam and copies again when you press Play.">🗑 Remove from PC</button>
+              title="Saves go to the shelf first. It stays in Steam and copies again when you press Play."><Icon name="remove" /> Remove from PC</button>
           {:else}
-            <button class="btn" disabled={busy || !status.shelf_online || !game.playable} onclick={() => run(api.install(game.id))}>⬇ Copy to this PC</button>
+            <button class="btn" disabled={busy || !status.shelf_online || !game.playable} onclick={() => run(api.install(game.id))}><Icon name="download" /> Copy to this PC</button>
+          {/if}
+          {#if game.kind === "Fan" || game.kind === "NonSteam"}
+            <button class="btn" disabled={busy || !status.shelf_online} onclick={() => (adding = { version: "", current: "", source: "", url: "", how: "file" })}
+              title="Add another version of {game.name}: from a file, a folder, or its download link"><Icon name="add" /> Add version</button>
           {/if}
           {#if game.kind !== "Steam"}
-            <button class="btn" disabled={busy || !status.shelf_online} onclick={() => (moving = true)} title="Move it to another group, or rename it">✎ Move / Rename</button>
+            <button class="btn" disabled={busy || !status.shelf_online} onclick={() => (moving = true)} title="Move it to another group, or rename it"><Icon name="edit" /> Move / Rename</button>
           {/if}
         </div>
         {#if error}<p class="error">{error}</p>{/if}
@@ -212,21 +298,24 @@
     {#if tab === "overview" || (tab === "art" && game.kind === "Steam")}
       <div class="box about">
         <div class="head">
-          <h4>About</h4>
+          <h4>About{viewed ? ` ${viewed.label}` : ""}</h4>
           {#if game.kind !== "Steam" && !editing}
-            <button class="btn small" disabled={!status.shelf_online || !info} onclick={() => (editing = { ...info.info, linksText: info.info.links.join("\n") })}>Edit</button>
+            <button class="btn small" disabled={!status.shelf_online || !info}
+              onclick={() => { const src = viewed ? info.own ?? {} : info.info; editing = { ...info.info, ...src, links: src.links ?? [], linksText: (src.links ?? []).join("\n") }; if (viewed) for (const k of ["description", "developer", "released", "page", "download"]) editing[k] = src[k] ?? ""; }}>Edit{viewed ? ` ${viewed.label}` : ""}</button>
           {/if}
         </div>
         {#if editing}
+          {@const inh = viewed ? (info?.inherited ?? {}) : {}}
           <div class="edit">
-            <label class="field"><span>Description</span><textarea class="input" rows="5" bind:value={editing.description} placeholder="What is this game about?"></textarea></label>
+            {#if viewed}<p class="faint small">Only what's different about {viewed.label}. Empty fields show the grey text: the newest version's, or the game's.</p>{/if}
+            <label class="field"><span>Description</span><textarea class="input" rows="5" bind:value={editing.description} placeholder={inh.description || "What is this game about?"}></textarea></label>
             <div class="two">
-              <label class="field"><span>Made by</span><input class="input" bind:value={editing.developer} /></label>
-              <label class="field"><span>Released</span><input class="input" bind:value={editing.released} placeholder="2024, or SAGE 2025" /></label>
+              <label class="field"><span>Made by</span><input class="input" bind:value={editing.developer} placeholder={inh.developer || ""} /></label>
+              <label class="field"><span>Released</span><input class="input" bind:value={editing.released} placeholder={inh.released || "2024, or SAGE 2025"} /></label>
             </div>
             <div class="two">
-              <label class="field"><span>Game page (SFGHQ, itch.io…)</span><input class="input mono" bind:value={editing.page} placeholder="https://sonicfangameshq.com/forums/showcase/…" /></label>
-              <label class="field"><span>Download link (MEGA, Google Drive, direct)</span><input class="input mono" bind:value={editing.download} placeholder="https://mega.nz/file/…" /></label>
+              <label class="field"><span>Game page (SFGHQ, itch.io…)</span><input class="input mono" bind:value={editing.page} placeholder={inh.page || "https://sonicfangameshq.com/forums/showcase/…"} /></label>
+              <label class="field"><span>Download link{viewed ? ` of ${viewed.label}` : ""} (MEGA, Google Drive, direct)</span><input class="input mono" bind:value={editing.download} placeholder={inh.download || "https://mega.nz/file/…"} /></label>
             </div>
             <label class="field"><span>Other links (one per line: website, video…)</span><textarea class="input mono" rows="2" bind:value={editing.linksText}></textarea></label>
             <div class="row">
@@ -243,7 +332,7 @@
           {#if info.info.links.length || info.info.page || info.info.download}
             <div class="row links">
               {#if info.info.page}<button class="btn small" onclick={() => api.open(info.info.page)}>↗ Game page</button>{/if}
-              {#if info.info.download}<button class="btn small" onclick={() => api.open(info.info.download)}>⬇ Download page</button>{/if}
+              {#if info.info.download}<button class="btn small" onclick={() => api.open(info.info.download)}><Icon name="download" /> Download page</button>{/if}
               {#each info.info.links as l}<button class="btn small ghost" onclick={() => api.open(l)}>↗ {l.replace(/^https?:\/\/(www\.)?/, "").slice(0, 48)}</button>{/each}
             </div>
           {/if}
@@ -289,7 +378,7 @@
             {#if game.versions?.length > 1}
               <div class="vtarget">
                 <span class="faint">Version</span>
-                <select class="input" value={target?.id} onchange={(e) => { picked = e.currentTarget.value; updateMsg = ""; }} title="The version Verify, Check for update and Re-download work on">
+                <select class="input" value={target?.id} onchange={(e) => view(e.currentTarget.value)} title="The version Verify, Check for update and Re-download work on (shows its profile)">
                   {#each game.versions as v, i}
                     <option value={v.id}>{v.label}{i === 0 ? " · newest" : ""}{v.id === game.version_id ? " · Play uses it" : ""}{v.on_pc ? " · on this PC" : ""}</option>
                   {/each}
@@ -305,27 +394,31 @@
               <button class="btn small" disabled={busy || !status.shelf_online} onclick={() => run(api.verify(targetId))}>✔ Verify</button>
               <button class="btn small" disabled={!info?.info?.download} title={info?.info?.download ? "" : "Add a download link under About > Edit"}
                 onclick={async () => { updateMsg = "Checking…"; try { updateMsg = await api.checkUpdate(targetId); } catch (e) { updateMsg = String(e); } }}>⟳ Check for update</button>
-              <button class="btn small" disabled={busy || !status.shelf_online} onclick={() => (redl = { version: "", file: null })}>⬇ Re-download…</button>
+              <button class="btn small" disabled={busy || !status.shelf_online} onclick={() => (redl = { version: "", file: null })}><Icon name="download" /> Re-download…</button>
             </div>
             {#if updateMsg}<p class="small note">{updateMsg}</p>{/if}
           </div>
         {/if}
       </div>
     {:else if tab === "art"}
-      <p class="muted">Pictures are kept on the shelf, so every PC gets them, and copied into Steam's library too (Steam shows them after it restarts).</p>
+      <p class="muted">
+        {#if viewed}Pictures of <b>{viewed.label}</b> alone. A picture it doesn't have comes from the newest version, then from the game.
+        {:else}Pictures are kept on the shelf, so every PC gets them, and copied into Steam's library too (Steam shows them after it restarts).{/if}
+      </p>
       <div class="arts">
         {#each arts as a}
-          {@const url = game.art[a.id]}
+          {@const url = shown.art[a.id]}
+          {@const own = viewed ? viewed.own_art.includes(a.id) : true}
           <div class="slot">
             <div class="frame" style="aspect-ratio:{a.ratio}" class:logo={a.id === "logo"}>
               {#if url}<img src={url} alt={a.label} />{:else}<span class="faint">None yet</span>{/if}
             </div>
             <div class="slotBar">
-              <div><b>{a.label}</b> <span class="faint">{a.hint}</span></div>
+              <div><b>{a.label}</b> <span class="faint">{a.hint}{viewed && url && !own ? " · from the newest version or the game" : ""}</span></div>
               <div class="row">
                 <button class="btn small" disabled={!status.shelf_online} onclick={() => (picking = a.id)}>Change</button>
                 {#if url && info?.art_on_shelf?.includes(a.id)}
-                  <button class="btn small ghost" onclick={async () => { await run(api.artRemove(game.id, a.id)); onchanged(); loadInfo(); }}>Remove</button>
+                  <button class="btn small ghost" onclick={async () => { await run(api.artRemove(game.id, a.id, ver)); onchanged(); loadInfo(); }}>{viewed ? "Use the inherited one" : "Remove"}</button>
                 {/if}
               </div>
             </div>
@@ -372,6 +465,42 @@
   </div>
 {/if}
 
+{#if adding}
+  <div class="overlay" role="presentation" onclick={(e) => e.target === e.currentTarget && (adding = null)}>
+    <div class="modal small">
+      <header><h2>Add a version of {game.name}</h2><button class="btn ghost" onclick={() => (adding = null)}>✕</button></header>
+      <div class="body addv">
+        {#if !game.versions?.length}
+          <p class="muted small">{game.name} isn't kept in versions yet. The copy on the shelf becomes one version, the new one another; both stay one entry in Steam, with a version menu.</p>
+          <label class="field"><span>The version you already have is called</span><input class="input" bind:value={adding.current} placeholder="e.g. 0.0.1" /></label>
+        {/if}
+        <label class="field"><span>The new version is called</span><input class="input" bind:value={adding.version} placeholder="e.g. 3.2.1" /></label>
+        <div class="field"><span>From</span>
+          <label class="radio"><input type="radio" name="addv" checked={adding.how === "file"} onchange={() => (adding.how = "file")} /> <span><b>A file or folder on this PC</b> <span class="faint">(or drop it here)</span><br /><span class="faint mono">{adding.source || "zip, 7z, rar, or the game's folder"}</span></span></label>
+          {#if adding.how === "file"}
+            <div class="row">
+              <button class="btn small" onclick={async () => { const f = await pickFile({ archives: true }); if (f) adding.source = f; }}>Choose a file…</button>
+              <button class="btn small" onclick={async () => { const f = await pickFile({ folder: true }); if (f) adding.source = f; }}>Choose a folder…</button>
+            </div>
+          {/if}
+          <label class="radio"><input type="radio" name="addv" checked={adding.how === "link"} onchange={() => (adding.how = "link")} /> <span><b>Its download link</b><br /><span class="faint">Kept as this version's own link, so Check for update and Re-download use it.</span></span></label>
+          {#if adding.how === "link"}
+            <input class="input mono" bind:value={adding.url} placeholder="https://… (direct, GitHub, Game Jolt, Google Drive, MEGA)" />
+          {/if}
+        </div>
+        <p class="faint small">After it's added, open the version on the game's page to give it its own logo, pictures and description. Whatever it leaves empty comes from the newest version.</p>
+        {#if error}<p class="error">{error}</p>{/if}
+      </div>
+      <footer>
+        <button class="btn" onclick={() => (adding = null)}>Cancel</button>
+        <button class="btn primary"
+          disabled={!adding.version.trim() || (!game.versions?.length && !adding.current.trim()) || (adding.how === "file" ? !adding.source : !adding.url.trim())}
+          onclick={addVersion}>Add {adding.version.trim() || "version"}</button>
+      </footer>
+    </div>
+  </div>
+{/if}
+
 {#if moving}
   <Move {game} onclose={() => (moving = false)} onmoved={(id) => { moving = false; onmoved(id); }} />
 {/if}
@@ -379,6 +508,7 @@
 {#if picking}
   <ArtPicker
     {game}
+    version={ver}
     art={picking}
     page={info?.info?.page ?? ""}
     {hasKey}
@@ -389,14 +519,29 @@
 {/if}
 
 <style>
+  .tags { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 10px; }
+  .tag { display: inline-flex; align-items: center; border: 1px solid rgba(var(--accent-rgb), .45); background: rgba(var(--accent-rgb), .12); border-radius: 99px; overflow: hidden; }
+  .tagName, .tagX, .tagAdd { border: 0; background: none; color: var(--accent-text); cursor: pointer; font-size: 12px; padding: 3px 9px; }
+  .tagX { padding: 3px 8px 3px 2px; color: var(--muted); }
+  .tagX:hover { color: var(--bad); }
+  .tagAdd { border: 1px dashed var(--line-2); border-radius: 99px; color: var(--muted); }
+  .tagAdd:hover { color: var(--text); border-color: var(--accent); }
+  .tagIn { width: 200px; padding: 5px 10px; font-size: 12.5px; }
+  .vstrip { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 12px; padding: 3px; background: rgba(var(--bg-rgb), .55); border: 1px solid var(--line); border-radius: var(--r); width: max-content; max-width: 100%; }
+  .vstrip button { display: inline-flex; align-items: center; gap: 5px; border: 0; background: none; color: var(--muted); padding: 5px 11px; border-radius: calc(var(--r) - 2px); cursor: pointer; font-size: 12.5px; }
+  .vstrip button:hover { color: var(--text); background: var(--panel-2); }
+  .vstrip button.on { color: var(--text); background: rgba(var(--accent-rgb), .22); box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), .5); }
+  .vmark { font-size: 10px; color: var(--accent-text); }
+  .addv { display: grid; gap: 14px; }
+  .addv .radio { display: flex; gap: 8px; align-items: flex-start; padding: 6px 0; }
   .redl-src { display: grid; gap: 6px; }
   .redl-src .mono { word-break: break-all; }
 
   .page { height: 100%; overflow-y: auto; overflow-x: hidden; }
   .edit { position: relative; border: 0; padding: 0; background: none; color: inherit; cursor: pointer; text-align: left; display: block; }
-  .edit .pen { position: absolute; right: 8px; bottom: 8px; font-size: 12px; font-weight: 600; padding: 4px 9px; border-radius: 99px; background: rgba(10, 17, 30, .85); border: 1px solid var(--line-2); color: var(--text); opacity: 0; transition: opacity .12s; pointer-events: none; }
+  .edit .pen { position: absolute; right: 8px; bottom: 8px; font-size: 12px; font-weight: 600; padding: 4px 9px; border-radius: 99px; background: rgba(var(--bg-rgb), .85); border: 1px solid var(--line-2); color: var(--text); opacity: 0; transition: opacity .12s; pointer-events: none; }
   .edit:hover .pen, .edit:focus-visible .pen { opacity: 1; }
-  .logoBtn { border-radius: 10px; }
+  .logoBtn { border-radius: var(--r); }
   .logoBtn:hover .logo { filter: drop-shadow(0 6px 20px rgba(0, 0, 0, .6)) drop-shadow(0 0 2px var(--accent)); }
   .logoBtn .pen { right: -4px; bottom: -4px; }
   .titleBtn { display: inline-flex; align-items: center; gap: 10px; }
@@ -408,22 +553,22 @@
   .vpick { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
   .vtarget { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 4px 0 10px; }
   .vtarget select { width: auto; min-width: 200px; max-width: 100%; padding: 6px 9px; }
-  .vpick select { width: auto; min-width: 260px; max-width: 520px; padding: 7px 10px; background: rgba(10, 17, 30, .7); backdrop-filter: blur(6px); }
-  .pill.link:hover { border-color: var(--accent); color: var(--text); background: rgba(31, 55, 95, .9); }
+  .vpick select { width: auto; min-width: 260px; max-width: 520px; padding: 7px 10px; background: rgba(var(--bg-rgb), .7); backdrop-filter: blur(6px); }
+  .pill.link:hover { border-color: var(--accent); color: var(--text); background: rgba(var(--panel-2-rgb), .9); }
   .hero { overflow: hidden; }
   .hero { position: relative; min-height: 380px; display: flex; align-items: flex-end; }
   .bg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
   .bg.blur { filter: blur(30px) saturate(1.3); transform: scale(1.2); opacity: .55; }
-  .bg.plain { background: radial-gradient(800px 300px at 30% 20%, rgba(42, 107, 179, .45), transparent), linear-gradient(180deg, #13284d, var(--bg)); }
-  .shade { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(10, 17, 30, .2) 0%, rgba(10, 17, 30, .55) 55%, var(--bg) 100%); }
+  .bg.plain { background: radial-gradient(800px 300px at 30% 20%, rgba(var(--accent-2-rgb), .45), transparent), linear-gradient(180deg, var(--panel-2), var(--bg)); }
+  .shade { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(var(--bg-rgb), .2) 0%, rgba(var(--bg-rgb), .55) 55%, var(--bg) 100%); }
   .heroInner { position: relative; z-index: 1; display: flex; align-items: flex-end; gap: 26px; padding: 40px 32px 22px; width: 100%; }
-  .poster { width: 190px; flex: none; box-shadow: 0 18px 40px rgba(0, 0, 0, .55); border-radius: 14px; animation: rise .3s ease-out; }
+  .poster { width: 190px; flex: none; box-shadow: 0 18px 40px rgba(0, 0, 0, .55); border-radius: calc(var(--radius) + 2px); animation: rise .3s ease-out; }
   .headline { flex: 1; min-width: 0; animation: rise .35s ease-out; }
   .logo { max-width: min(460px, 100%); max-height: 130px; object-fit: contain; filter: drop-shadow(0 6px 20px rgba(0, 0, 0, .6)); }
   h1 { margin: 0; font-size: 38px; line-height: 1.1; text-shadow: 0 4px 20px rgba(0, 0, 0, .6); }
   .meta { display: flex; flex-wrap: wrap; gap: 6px; margin: 14px 0 16px; }
-  .meta .pill.ver { color: #cfe2ff; border-color: rgba(75, 147, 255, .6); }
-  .meta .pill { background: rgba(18, 29, 49, .75); backdrop-filter: blur(6px); }
+  .meta .pill.ver { color: var(--accent-text); border-color: rgba(var(--accent-rgb), .6); }
+  .meta .pill { background: rgba(var(--panel-rgb), .75); backdrop-filter: blur(6px); }
   .buttons { display: flex; flex-wrap: wrap; gap: 10px; }
   .buttons .btn { padding: 10px 18px; }
   .play { font-size: 15px; padding: 10px 26px !important; }
@@ -456,7 +601,7 @@
   .arts { display: grid; grid-template-columns: 250px minmax(0, 1fr); grid-auto-rows: auto; gap: 16px; margin-top: 14px; }
   .slot { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px; display: flex; flex-direction: column; gap: 10px; }
   .slot:nth-child(1) { grid-row: span 2; }
-  .frame { width: 100%; border-radius: 9px; background: repeating-conic-gradient(#121c30 0 25%, #0f1828 0 50%) 0 0 / 18px 18px; display: grid; place-items: center; overflow: hidden; }
+  .frame { width: 100%; border-radius: var(--r); background: repeating-conic-gradient(var(--panel) 0 25%, var(--bg-2) 0 50%) 0 0 / 18px 18px; display: grid; place-items: center; overflow: hidden; }
   .frame img { width: 100%; height: 100%; object-fit: cover; }
   .frame.logo img { object-fit: contain; padding: 12px; }
   .slot:nth-child(4) .frame { max-width: 140px; }
