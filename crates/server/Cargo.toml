@@ -2,6 +2,7 @@
 name = "steam-fan-server"
 description = "Steam-Fan-Server: the shelf as a service. Runs in Docker on the NAS: catalog, downloads, updates, file streaming."
 version.workspace = true
+authors.workspace = true
 edition.workspace = true
 license.workspace = true
 

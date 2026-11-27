@@ -2,6 +2,7 @@
 name = "steam-fan"
 description = "Steam-Fan: your NAS is the shelf, your PC is the box, Steam is the launcher"
 version.workspace = true
+authors.workspace = true
 edition.workspace = true
 license.workspace = true
 

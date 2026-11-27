@@ -2,6 +2,7 @@
 name = "steam-fan-app"
 description = "Steam-Fan: the library window"
 version.workspace = true
+authors.workspace = true
 edition.workspace = true
 license.workspace = true
 

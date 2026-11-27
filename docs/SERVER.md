@@ -39,7 +39,14 @@ It asks for your NAS password (SSH, then sudo) and:
    otherwise **on the NAS** (15 to 30 minutes the first time). `--build-on-nas` forces the NAS;
 5. starts the container, shows its log and a **pairing code**.
 
-Run it again to update the server. Before the first run:
+Run it again to update the server. **Or, faster:** GitHub Actions builds the image on every push
+(`ghcr.io/za0068/steam-fan-server`), so on the NAS only this is needed:
+
+```sh
+sudo sh /volume1/docker/steam-fan-src/docker/nas-up.sh pull
+```
+
+Before the first run:
 
 - DSM > Control Panel > Terminal & SNMP: **Enable SSH service**.
 - Your DSM user is in the **administrators** group (sudo needs it).

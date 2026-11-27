@@ -2,6 +2,7 @@
 # Runs on the NAS as root (deploy-nas.sh calls it through sudo):
 #   nas-up.sh load    load the image the PC sent (../image.tar.gz) and (re)start the container
 #   nas-up.sh build   build the image here and (re)start the container
+#   nas-up.sh pull    get the image GitHub built (ghcr.io) and (re)start the container
 set -e
 cd "$(dirname "$0")"
 D=$(command -v docker 2>/dev/null || echo /usr/local/bin/docker)
@@ -24,8 +25,13 @@ case "$1" in
     build)
         compose up -d --build
         ;;
+    pull)
+        "$D" pull ghcr.io/za0068/steam-fan-server:latest
+        "$D" tag ghcr.io/za0068/steam-fan-server:latest steam-fan-server:latest
+        compose up -d --no-build --force-recreate
+        ;;
     *)
-        echo "usage: nas-up.sh load|build"
+        echo "usage: nas-up.sh load|build|pull"
         exit 1
         ;;
 esac
