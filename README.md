@@ -186,6 +186,17 @@ GitHub Actions builds the app for all three systems on every push. The files are
 
 Steam entries work the same on all three systems: Steam starts `steam-fan`, and it gets the game ready first.
 
+### Releases
+
+```bash
+scripts/release.sh patch    # 0.1.0 → 0.1.1; or minor, major, or an exact 0.3.0
+```
+
+The script runs the tests, bumps the version, commits, tags `vX.Y.Z` and pushes. GitHub Actions then:
+- builds the apps for Linux, Windows and macOS and puts them in a release at
+  [github.com/ZA0068/Steam-Fan/releases](https://github.com/ZA0068/Steam-Fan/releases), with notes listing the changes;
+- publishes the server image as `ghcr.io/za0068/steam-fan-server:X.Y.Z` and `:latest`.
+
 ### With Steam-Fan-Server
 
 Settings → **Steam-Fan-Server**: add the server's address with a pairing code
