@@ -64,11 +64,21 @@ fn pick_library(cfg: &Config, appid: u32, wanted: Option<&Path>) -> Result<PathB
     steam::libraries(&cfg.steam_root()).into_iter().find(|l| l.join("steamapps").is_dir()).context("no Steam library found")
 }
 
+/// Steam games' archives go through the shelf folder, also when fan games come from
+/// Steam-Fan-Server: it has to be mounted for these.
+fn folder_needed(cfg: &Config) -> Result<()> {
+    if cfg.server_mode() && !crate::config::shelf_online(&cfg.shelf()) {
+        bail!("archived Steam games need the shelf folder ({}) mounted on this PC; Steam-Fan-Server only serves fan, non-Steam and emulator games", cfg.shelf().display());
+    }
+    Ok(())
+}
+
 /// Install or update a game from the shelf into Steam's library. Steam must be closed.
 pub fn restore(cfg: &Config, appid: u32, library: Option<&Path>, cancel: &Cancel, cb: &mut dyn FnMut(&Progress)) -> Result<()> {
     if steam::running() {
         bail!("Steam is running. Quit Steam first: it only notices new games when it starts.");
     }
+    folder_needed(cfg)?;
     let m = shelf_manifest(cfg, appid).context("this game isn't in the archive on the shelf")?;
     if m.installdir.is_empty() {
         bail!("the archive manifest has no install folder");
@@ -93,6 +103,7 @@ pub fn restore(cfg: &Config, appid: u32, library: Option<&Path>, cancel: &Cancel
 /// Copy a game from Steam's library on this PC to the shelf, when the PC has the newer version.
 pub fn upload(cfg: &Config, appid: u32, cancel: &Cancel, cb: &mut dyn FnMut(&Progress)) -> Result<()> {
     let (lib, m) = steam::installed(&cfg.steam_root(), appid).context("this game isn't installed on this PC")?;
+    folder_needed(cfg)?;
     if !cfg.shelf_online() {
         bail!("the shelf isn't reachable");
     }

@@ -209,6 +209,9 @@ fn clear_cached(g: &Game, art: Art) {
 
 /// Bring the shelf's pictures for one game to this PC. Returns true if anything changed.
 pub fn mirror(cfg: &Config, g: &Game) -> bool {
+    if cfg.server_mode() {
+        return crate::remote::fetch_art(cfg, g).unwrap_or(false);
+    }
     let mut changed = false;
     let found = shelf_pictures(cfg, g);
     let _ = fs::create_dir_all(cache_dir(g)); // also marks the game as looked at
@@ -260,7 +263,9 @@ pub fn store(cfg: &Config, g: &Game, art: Art, bytes: &[u8]) -> Result<PathBuf> 
             (out.into_inner(), "png")
         }
     };
-    if cfg.shelf_online() {
+    if cfg.server_mode() {
+        crate::remote::require(cfg)?.put_bytes(&format!("/art?id={}&kind={}", crate::remote::q(&g.title_id()), art.name()), &data)?;
+    } else if cfg.shelf_online() {
         let dir = shelf_dir(cfg, g);
         fs::create_dir_all(&dir).with_context(|| format!("cannot write to {}", dir.display()))?;
         for e in EXTS {
@@ -274,11 +279,20 @@ pub fn store(cfg: &Config, g: &Game, art: Art, bytes: &[u8]) -> Result<PathBuf> 
     fs::create_dir_all(cache_dir(g))?;
     let p = cache_dir(g).join(format!("{}.{ext}", art.name()));
     fs::write(&p, &data)?;
+    if cfg.server_mode() {
+        crate::remote::update_entry(cfg, g)?;
+    }
     Ok(p)
 }
 
 /// Remove a picture set in the app (pictures inside the game folder stay).
 pub fn remove(cfg: &Config, g: &Game, art: Art) -> Result<()> {
+    if cfg.server_mode() {
+        crate::remote::require(cfg)?.delete(&format!("/art?id={}&kind={}", crate::remote::q(&g.title_id()), art.name()))?;
+        clear_cached(g, art);
+        crate::remote::update_entry(cfg, g)?;
+        return Ok(());
+    }
     let dir = shelf_dir(cfg, g);
     for e in EXTS {
         let _ = fs::remove_file(dir.join(format!("{}.{e}", art.name())));
@@ -659,10 +673,16 @@ pub fn info(g: &Game) -> Info {
 }
 
 pub fn save_info(cfg: &Config, g: &Game, info: &Info) -> Result<()> {
+    let text = toml::to_string_pretty(info)?;
+    if cfg.server_mode() {
+        crate::remote::require(cfg)?.send_json::<serde_json::Value>("PUT", &format!("/info?id={}", crate::remote::q(&g.title_id())), serde_json::to_value(info)?)?;
+        fs::create_dir_all(cache_dir(g))?;
+        fs::write(cache_dir(g).join("info.toml"), &text)?;
+        return Ok(());
+    }
     if !cfg.shelf_online() {
         bail!("the shelf isn't reachable");
     }
-    let text = toml::to_string_pretty(info)?;
     let dir = shelf_dir(cfg, g);
     fs::create_dir_all(&dir)?;
     fs::write(dir.join("info.toml"), &text)?;
@@ -673,6 +693,10 @@ pub fn save_info(cfg: &Config, g: &Game, info: &Info) -> Result<()> {
 
 /// Screenshots on this PC (copied from the shelf), sorted by name.
 pub fn screenshots(g: &Game) -> Vec<PathBuf> {
+    // with a server: the ones it has (fetched when shown)
+    if cache_dir(g).join("server-screenshots.json").is_file() {
+        return crate::remote::screenshot_names(g).into_iter().map(|n| cache_dir(g).join("screenshots").join(n)).collect();
+    }
     let mut v: Vec<PathBuf> = pictures_in(&cache_dir(g).join("screenshots")).into_iter().map(|(_, p)| p).collect();
     v.sort();
     v
@@ -680,6 +704,17 @@ pub fn screenshots(g: &Game) -> Vec<PathBuf> {
 
 /// Add pictures as screenshots: on the shelf and on this PC. Returns how many were added.
 pub fn add_screenshots(cfg: &Config, g: &Game, files: &[PathBuf]) -> Result<usize> {
+    if cfg.server_mode() {
+        let s = crate::remote::require(cfg)?;
+        for f in files {
+            let name = f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "screenshot.png".into());
+            let bytes = fs::read(f).with_context(|| format!("cannot read {}", f.display()))?;
+            let url = format!("/screenshot?id={}&name={}", crate::remote::q(&g.title_id()), crate::remote::q(&name));
+            s.post_bytes(&url, &bytes)?;
+        }
+        crate::remote::update_entry(cfg, g)?;
+        return Ok(files.len());
+    }
     if !cfg.shelf_online() {
         bail!("the shelf isn't reachable");
     }
@@ -718,6 +753,12 @@ pub fn add_screenshots(cfg: &Config, g: &Game, files: &[PathBuf]) -> Result<usiz
 pub fn remove_screenshot(cfg: &Config, g: &Game, name: &str) -> Result<()> {
     if name.contains('/') || name.contains("..") {
         bail!("bad name");
+    }
+    if cfg.server_mode() {
+        crate::remote::require(cfg)?.delete(&format!("/screenshot?id={}&name={}", crate::remote::q(&g.title_id()), crate::remote::q(name)))?;
+        let _ = fs::remove_file(cache_dir(g).join("screenshots").join(name));
+        crate::remote::update_entry(cfg, g)?;
+        return Ok(());
     }
     let _ = fs::remove_file(shelf_dir(cfg, g).join("screenshots").join(name));
     let _ = fs::remove_file(cache_dir(g).join("screenshots").join(name));
@@ -841,6 +882,9 @@ pub struct Added {
 
 /// Download pictures and add them as screenshots (onto the shelf). One that fails doesn't stop the others.
 pub fn add_screenshots_from_urls(cfg: &Config, g: &Game, urls: &[String]) -> Result<Added> {
+    if cfg.server_mode() {
+        return crate::remote::screenshots_from_urls(cfg, g, urls);
+    }
     let dir = dirs::cache_dir().unwrap_or_else(|| crate::config::home().join(".cache")).join("steam-fan/shots");
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir)?;

@@ -173,6 +173,27 @@ The script:
 - makes the **Steam** menu entry start Steam through Steam-Fan, so new shelf games show up every time Steam starts;
 - moves your Steam entries over from the old scripts and removes them (copies are in `legacy/`). Quit Steam first.
 
+### Windows and Mac
+
+GitHub Actions builds the app for all three systems on every push. The files are under the run's
+**Artifacts**, and a `v*` tag also turns them into a release:
+
+- **Windows**: an `.msi` or `-setup.exe`. Windows games run directly, without Proton. Steam is found through the registry.
+- **macOS** (11 or newer, Apple Silicon): a `.dmg`. Windows fan games run through **CrossOver**
+  (a bottle named `Steam-Fan`) or **Wine** (`brew install --cask wine-stable`); set another command under Settings → This PC → Wine.
+  macOS games run directly.
+- **Linux**: `.deb`, `.rpm` and `.AppImage`, or `./install.sh` as above.
+
+Steam entries work the same on all three systems: Steam starts `steam-fan`, and it gets the game ready first.
+
+### With Steam-Fan-Server
+
+Settings → **Steam-Fan-Server**: add the server's address with a pairing code
+(`docker exec steam-fan-server steam-fan-server pair` on the NAS), and add the Tailscale address too.
+After that the share doesn't need to be mounted, and any PC on Tailscale works. Games, pictures and saves come from the server, and
+adding, re-downloading and updating become requests that the server carries out. Details are in [docs/SERVER.md](docs/SERVER.md#the-app-as-a-client).
+From the terminal: `steam-fan server pair http://10.0.0.36:8484 123456`, `steam-fan server status`.
+
 ## Using it
 
 Open **Steam-Fan** from the app menu.
@@ -304,7 +325,7 @@ Run the tests with `cargo test`.
 
 ## Next steps
 
-1. **Steam-Fan-Server** (step 1 built: [docs/SERVER.md](docs/SERVER.md)). The NAS runs its own Steam-Fan in Docker: it downloads (MEGA, Google Drive, direct links), checks links for updates, keeps checksums and versions, and streams game files to the PC.
-2. **The app as its client.** It asks the server instead of reading a mounted share, so it works over Tailscale from anywhere and on Windows. Saves sync through the server.
+1. ~~Steam-Fan-Server~~ and ~~the app as its client~~: done ([docs/SERVER.md](docs/SERVER.md)).
+2. Themes: colors, layout and custom CSS, with a safe default to fall back to.
 3. The Steam archive job (`legacy/nas/archive.sh`) moves into the server, with progress visible in the app.
 4. Remote: a "wake the PC and start this game" button. Steam Remote Play already streams every library entry, Steam-Fan ones included.

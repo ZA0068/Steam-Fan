@@ -48,6 +48,8 @@ export const api = {
   saveSettings: (config) => call("settings_save", { config }),
   setSecret: (name, value) => call("secret_set", { name, value }),
   shelfReachable: (path) => call("shelf_reachable", { path }),
+  serverPair: (url, code) => call("server_pair", { url, code }),
+  serverReachable: (url) => call("server_reachable", { url }),
   open: (target) => call("open", { target }),
   play: (id) => call("play", { id }),
 };

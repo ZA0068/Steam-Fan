@@ -24,6 +24,10 @@ pub struct RefreshReport {
 
 /// Read the shelf. Folders unchanged since last time come from the database.
 pub fn refresh(cfg: &Config, db: &mut Db, full: bool, mut on_read: impl FnMut(&str)) -> Result<RefreshReport> {
+    if cfg.server_mode() {
+        on_read("Steam-Fan-Server");
+        return crate::remote::refresh(cfg, db);
+    }
     let old = if full { HashMap::new() } else { db.groups()? };
     let shelf = cfg.shelf();
     let sources = shelf::sources(cfg).with_context(|| format!("cannot read the shelf at {}", shelf.display()))?;
@@ -64,6 +68,10 @@ pub fn matches(g: &Game, only: &[String]) -> bool {
 
 /// Find the program (or ROM file) of games that don't have one yet. Deep walk, once per game.
 pub fn find_programs(cfg: &Config, db: &Db, games: &mut [Game], only: &[String], again: bool, mut on_game: impl FnMut(&Game)) -> Result<()> {
+    if cfg.server_mode() {
+        // the server found the programs; they came with the library
+        return Ok(());
+    }
     let known = db.programs()?;
     for g in games.iter_mut() {
         if g.kind == Kind::Steam || !matches(g, only) {
@@ -343,6 +351,9 @@ pub fn sync_to_steam(
 /// A folder holding several games: show them as separate games (`separate`), or as one game
 /// in versions. `g` is one of them. A marker file in the folder remembers the choice.
 pub fn set_separate(cfg: &Config, db: &mut Db, g: &Game, separate: bool) -> Result<()> {
+    if cfg.server_mode() {
+        return crate::remote::set_separate(cfg, db, g, separate);
+    }
     if !matches!(g.kind, Kind::Fan | Kind::NonSteam) {
         bail!("only fan and non-Steam games can be kept in versions");
     }
@@ -384,6 +395,9 @@ fn move_path(a: &Path, b: &Path) -> Result<()> {
 /// Move or rename a whole game with all its versions (its folder of versions).
 /// Returns the game's new id.
 pub fn relocate_title(cfg: &Config, db: &mut Db, t: &Title, kind: Kind, group: &str, name: &str) -> Result<String> {
+    if cfg.server_mode() {
+        return crate::remote::relocate(cfg, db, &t.game, kind, group, name, "", !t.versions.is_empty());
+    }
     if t.versions.is_empty() {
         return relocate(cfg, db, &t.game, kind, group, name, "");
     }
@@ -441,6 +455,9 @@ pub fn relocate_title(cfg: &Config, db: &mut Db, t: &Title, kind: Kind, group: &
 
 /// Copy a game from the shelf to this PC and put its saves back.
 pub fn install(cfg: &Config, db: &Db, g: &Game, cancel: &Cancel, cb: &mut dyn FnMut(&Progress)) -> Result<()> {
+    if cfg.server_mode() && g.kind != Kind::Steam {
+        return crate::remote::install(cfg, db, g, cancel, cb);
+    }
     if g.kind == Kind::Steam {
         return crate::archive::restore(cfg, g.appid, None, cancel, cb);
     }
@@ -511,6 +528,9 @@ pub fn remove(cfg: &Config, db: &Db, g: &Game) -> Result<()> {
 
 /// Put a game folder from this PC onto the shelf (`fangames/<group>/<name>` and so on).
 pub fn upload(cfg: &Config, db: &Db, folder: &Path, kind: Kind, group: &str, cancel: &Cancel, cb: &mut dyn FnMut(&Progress)) -> Result<PathBuf> {
+    if cfg.server_mode() {
+        bail!("with Steam-Fan-Server, add games with Add game (the server stores them)");
+    }
     if !cfg.shelf_online() {
         bail!("the shelf isn't reachable");
     }
@@ -539,6 +559,18 @@ pub struct ArtReport {
 /// again), and copy them into Steam's artwork folder.
 pub fn refresh_art(cfg: &Config, db: &Db, games: &[Game], fetch: bool, again: bool, mut status: impl FnMut(&str)) -> ArtReport {
     use crate::artwork::{self, Art};
+    if cfg.server_mode() {
+        let mut rep = ArtReport::default();
+        for t in titles(games.to_vec()) {
+            match crate::remote::fetch_art(cfg, &t.game) {
+                Ok(true) => rep.copied += 1,
+                Ok(false) => {}
+                Err(e) => rep.errors.push(format!("{}: {e:#}", t.game.name)),
+            }
+        }
+        status("artwork from the server");
+        return rep;
+    }
     let mut rep = ArtReport::default();
     let online = cfg.shelf_online();
     // pictures belong to the game, not to each of its versions
@@ -613,6 +645,9 @@ pub fn refresh_art(cfg: &Config, db: &Db, games: &[Game], fetch: bool, again: bo
 /// `group` may be "Group/Subgroup". A `version` keeps the game as one of several
 /// versions side by side (`<group>/<name>/<version>`). Returns the game's new id.
 pub fn relocate(cfg: &Config, db: &mut Db, g: &Game, kind: Kind, group: &str, name: &str, version: &str) -> Result<String> {
+    if cfg.server_mode() {
+        return crate::remote::relocate(cfg, db, g, kind, group, name, version, false);
+    }
     use crate::artwork;
     use std::fs;
     if g.kind == Kind::Steam || kind == Kind::Steam {
@@ -710,6 +745,9 @@ pub fn redownload(
     status: &mut dyn FnMut(&str),
     cb: &mut dyn FnMut(&Progress),
 ) -> Result<PathBuf> {
+    if cfg.server_mode() {
+        return crate::remote::redownload(cfg, db, g, as_version, file, cancel, status, cb);
+    }
     use crate::{artwork, import, integrity, source};
     use std::fs;
     if g.kind == Kind::Steam {

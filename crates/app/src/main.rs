@@ -92,6 +92,23 @@ enum Cmd {
         #[command(subcommand)]
         cmd: ArchiveCmd,
     },
+    /// Use a Steam-Fan-Server instead of the shelf folder.
+    Server {
+        #[command(subcommand)]
+        cmd: ServerCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum ServerCmd {
+    /// Pair this PC with the code from `steam-fan-server pair`, and add the address.
+    Pair { url: String, code: String },
+    /// Add another address of the same server (tried in order).
+    Add { url: String },
+    /// Stop using a server address.
+    Remove { url: String },
+    /// The addresses and which one answers.
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -133,6 +150,53 @@ fn main() {
             ArchiveCmd::Restore { appid } => cli::archive_restore(appid),
             ArchiveCmd::Upload { appid } => cli::archive_upload(appid),
         },
+        Some(Cmd::Server { cmd }) => match server(cmd) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("{e:#}");
+                1
+            }
+        },
     };
     std::process::exit(code);
+}
+
+fn server(cmd: ServerCmd) -> anyhow::Result<()> {
+    use steam_fan_core::{config::Config, remote};
+    let mut cfg = Config::load()?;
+    let clean = |u: &str| u.trim().trim_end_matches('/').to_string();
+    match cmd {
+        ServerCmd::Pair { url, code } => {
+            let url = clean(&url);
+            remote::pair(&url, &code, &remote::device_name())?;
+            if !cfg.servers.contains(&url) {
+                cfg.servers.insert(0, url);
+            }
+            cfg.save()?;
+            println!("Paired. Run `steam-fan sync` to read the library from the server.");
+        }
+        ServerCmd::Add { url } => {
+            let url = clean(&url);
+            if !cfg.servers.contains(&url) {
+                cfg.servers.push(url);
+            }
+            cfg.save()?;
+        }
+        ServerCmd::Remove { url } => {
+            let url = clean(&url);
+            cfg.servers.retain(|s| *s != url);
+            cfg.save()?;
+        }
+        ServerCmd::Status => {
+            if cfg.servers.is_empty() {
+                println!("No server: games come from the shelf folder {}", cfg.shelf().display());
+            }
+            match remote::active(&cfg) {
+                Some(s) => println!("Using {}", s.base),
+                None if !cfg.servers.is_empty() => println!("No answer from {}", cfg.servers.join(", ")),
+                None => {}
+            }
+        }
+    }
+    Ok(())
 }

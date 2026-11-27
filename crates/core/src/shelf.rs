@@ -166,7 +166,7 @@ impl Game {
 
     /// Where this game's saves are kept on the shelf.
     pub fn save_path(&self, cfg: &Config) -> PathBuf {
-        let s = cfg.shelf().join("saves");
+        let s = cfg.saves_root();
         match self.kind {
             Kind::Fan => s.join("fangames").join(&self.rel),
             Kind::NonSteam => s.join("nonsteam").join(&self.rel),

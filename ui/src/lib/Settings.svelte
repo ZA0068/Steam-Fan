@@ -17,6 +17,36 @@
   }
   onMount(load);
 
+  // Steam-Fan-Server
+  let newServer = $state("");
+  let code = $state("");
+  let pairing = $state(false);
+  let up = $state({});
+  $effect(() => {
+    if (!c) return;
+    for (const u of c.servers) if (!(u in up)) { up[u] = null; api.serverReachable(u).then((r) => (up[u] = r)).catch(() => (up[u] = false)); }
+  });
+  async function pair() {
+    error = "";
+    pairing = true;
+    try {
+      c.servers = await api.serverPair(newServer, code);
+      newServer = code = "";
+      await load();
+      saved = "Paired with the server";
+      setTimeout(() => (saved = ""), 2500);
+    } catch (e) {
+      error = String(e);
+    } finally {
+      pairing = false;
+    }
+  }
+  function addServer() {
+    const u = newServer.trim().replace(/\/+$/, "");
+    if (u && !c.servers.includes(u)) c.servers.push(u);
+    newServer = "";
+  }
+
   $effect(() => {
     if (!c) return;
     const p = c.shelf;
@@ -62,6 +92,29 @@
   {#if c}
     <div class="scroll">
       <section>
+        <h3>Steam-Fan-Server</h3>
+        <p class="muted">With a server, the shelf is on it: games, pictures and saves come over the network, and the shelf setting below is not used. Addresses are tried in order (e.g. the home network first, then Tailscale). Leave empty to use the shelf folder directly.</p>
+        {#each c.servers as u, i}
+          <div class="line">
+            <span class="pill"><span class="dot" class:good={up[u]} class:bad={up[u] === false}></span>{up[u] == null ? "checking…" : up[u] ? "answers" : "no answer"}</span>
+            <span class="mono grow">{u}</span>
+            <button class="btn small ghost" disabled={i === 0} onclick={() => { c.servers.splice(i, 1); c.servers.splice(i - 1, 0, u); }}>↑</button>
+            <button class="btn small ghost danger" onclick={() => c.servers.splice(i, 1)}>Remove</button>
+          </div>
+        {/each}
+        <div class="line">
+          <input class="input" placeholder="http://10.0.0.36:8484" bind:value={newServer} />
+          <input class="input code" placeholder="pairing code" maxlength="6" bind:value={code} />
+          <button class="btn" disabled={!newServer.trim() || code.trim().length < 6 || pairing} onclick={pair}>{pairing ? "Pairing…" : "Pair"}</button>
+          <button class="btn ghost" disabled={!newServer.trim()} onclick={addServer}>Add without pairing</button>
+        </div>
+        <p class="faint small">
+          {#if s.paired}<span class="dot good"></span> This PC is paired.{:else}Not paired yet.{/if}
+          Get a code on the NAS with <span class="mono">docker exec steam-fan-server steam-fan-server pair</span>. Another address of the same server needs no new code.
+        </p>
+      </section>
+
+      <section>
         <h3>Shelf</h3>
         <p class="muted">Where all your games are stored: the NAS share mounted on this PC, or any folder.</p>
         <div class="line">
@@ -103,7 +156,8 @@
           <label class="field"><span>Non-Steam games go to</span><input class="input" bind:value={c.nonsteam_local} /></label>
           <label class="field"><span>Emulator games go to</span><input class="input" bind:value={c.rom_local} /></label>
           <label class="field"><span>Steam folder</span><input class="input" bind:value={c.steam_root} /></label>
-          <label class="field"><span>Proton for Windows games</span><input class="input" bind:value={c.proton} placeholder="empty: Steam's default" /></label>
+          <label class="field"><span>Proton for Windows games (Linux)</span><input class="input" bind:value={c.proton} placeholder="empty: Steam's default" /></label>
+          <label class="field"><span>Wine for Windows games (Mac)</span><input class="input mono" value={words(c.wine)} oninput={(ev) => (c.wine = split(ev.target.value))} placeholder="empty: CrossOver bottle Steam-Fan, else wine" /></label>
         </div>
       </section>
 
@@ -134,6 +188,8 @@
 </div>
 
 <style>
+  .grow { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  .code { width: 130px; flex: none; }
   .page { display: flex; flex-direction: column; height: 100%; }
   header { padding: 18px 32px 6px; }
   h1 { margin: 0; font-size: 22px; }

@@ -203,7 +203,7 @@ async fn health(State(app): State<App>) -> Res<Json<Health>> {
     let cfg = app.cfg.clone();
     let auto = std::env::var("SF_AUTO_UPDATE").map_or(false, |v| v.eq_ignore_ascii_case("replace"));
     blocking(move || {
-        let games = Db::open_default().and_then(|db| db.games()).map(|g| g.len()).unwrap_or(0);
+        let games = Db::open_default().and_then(|db| db.games()).map(|g| library::titles(g).len()).unwrap_or(0);
         Ok(Json(Health { name: "Steam-Fan-Server", version: VERSION, shelf: cfg.shelf.clone(), shelf_online: cfg.shelf_online(), games, auto_update: auto }))
     })
     .await
@@ -918,6 +918,173 @@ async fn job_cancel(State(app): State<App>, Json(q): Json<JobQ>) -> Json<bool> {
     Json(app.jobs.cancel(q.id))
 }
 
+// ---------------------------------------------------------------- what the PCs need in one go
+
+#[derive(Serialize)]
+struct Snapshot {
+    version: &'static str,
+    /// Every game and every version, with program, platform and date, as the PC stores them.
+    games: Vec<Game>,
+    /// Info of each library entry that has some (description, links, chosen version...).
+    info: std::collections::BTreeMap<String, Info>,
+    /// Pictures of each entry: kind and file date, so a PC fetches only new ones.
+    art: std::collections::BTreeMap<String, Vec<(Art, i64)>>,
+    /// Screenshot file names of each entry.
+    screenshots: std::collections::BTreeMap<String, Vec<String>>,
+}
+
+/// One entry's info, pictures (with dates) and screenshots.
+fn entry_parts(g: &Game) -> (Info, Vec<(Art, i64)>, Vec<String>) {
+    let info = artwork::info(g);
+    let pics = Art::all()
+        .into_iter()
+        .filter_map(|a| artwork::local(g, a).map(|p| (a, steam_fan_core::shelf::mtime(&p) / 1_000_000_000)))
+        .collect();
+    let shots = artwork::screenshots(g).iter().filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())).collect();
+    (info, pics, shots)
+}
+
+/// The whole library for a PC: it keeps this, and asks for files and pictures as needed.
+async fn snapshot() -> Res<Json<Snapshot>> {
+    blocking(move || {
+        let games = Db::open_default()?.games()?;
+        let mut info: std::collections::BTreeMap<String, Info> = Default::default();
+        let (mut art, mut screenshots) = (std::collections::BTreeMap::new(), std::collections::BTreeMap::new());
+        for t in library::titles(games.clone()) {
+            let id = t.id();
+            let (i, pics, shots) = entry_parts(&t.game);
+            if i != Info::default() {
+                info.insert(id.clone(), i);
+            }
+            if !pics.is_empty() {
+                art.insert(id.clone(), pics);
+            }
+            if !shots.is_empty() {
+                screenshots.insert(id, shots);
+            }
+        }
+        Ok(Json(Snapshot { version: VERSION, games, info, art, screenshots }))
+    })
+    .await
+}
+
+#[derive(Serialize)]
+struct Entry {
+    info: Info,
+    art: Vec<(Art, i64)>,
+    screenshots: Vec<String>,
+}
+
+/// One entry's part of the snapshot, after a PC changed its pictures or info.
+async fn entry(State(app): State<App>, Query(q): Query<IdQ>) -> Res<Json<Entry>> {
+    blocking(move || {
+        let g = find(&app.cfg, &q.id)?;
+        let (info, art, screenshots) = entry_parts(&g);
+        Ok(Json(Entry { info, art, screenshots }))
+    })
+    .await
+}
+
+// ---------------------------------------------------------------- saves
+
+/// A game's save area on the shelf, for a PC to sync with.
+fn save_root(cfg: &Config, id: &str) -> Result<PathBuf> {
+    Ok(find(cfg, id)?.save_path(cfg))
+}
+
+async fn saves_list(State(app): State<App>, Query(q): Query<IdQ>) -> Res<Json<Vec<FileOut>>> {
+    blocking(move || {
+        let root = save_root(&app.cfg, &q.id)?;
+        Ok(Json(if root.is_dir() { list_files(&root, None)? } else { vec![] }))
+    })
+    .await
+}
+
+async fn save_get(State(app): State<App>, Query(q): Query<FileQ>, req: Request) -> Res<Response> {
+    let cfg = app.cfg.clone();
+    let p = blocking(move || resolve(&save_root(&cfg, &q.id)?, &q.path)).await?;
+    serve(p, req).await
+}
+
+#[derive(Deserialize)]
+struct SavePutQ {
+    id: String,
+    path: String,
+    /// The file's date on the PC (seconds), kept so both sides agree which is newer.
+    #[serde(default)]
+    mtime: i64,
+}
+
+/// A save file from a PC. Never deletes anything; an older copy is simply replaced.
+async fn save_put(State(app): State<App>, Query(q): Query<SavePutQ>, body: Bytes) -> Res<Json<&'static str>> {
+    let cfg = app.cfg.clone();
+    blocking(move || {
+        let root = save_root(&cfg, &q.id)?;
+        let rel = Path::new(&q.path);
+        if q.path.is_empty() || rel.components().any(|c| !matches!(c, Component::Normal(_))) {
+            bail!("bad save path");
+        }
+        let dst = root.join(rel);
+        std::fs::create_dir_all(dst.parent().unwrap())?;
+        let tmp = dst.with_file_name(format!(".{}.steam-fan-part", dst.file_name().unwrap().to_string_lossy()));
+        std::fs::write(&tmp, &body)?;
+        if q.mtime > 0 {
+            let f = std::fs::File::options().write(true).open(&tmp)?;
+            f.set_modified(std::time::UNIX_EPOCH + Duration::from_secs(q.mtime as u64))?;
+        }
+        std::fs::rename(&tmp, &dst)?;
+        Ok(Json("saved"))
+    })
+    .await
+}
+
+// ---------------------------------------------------------------- moving and grouping
+
+#[derive(Deserialize)]
+struct RelocateReq {
+    id: String,
+    kind: String,
+    group: String,
+    name: String,
+    /// Move only this version (the entry's own id names it), as this version.
+    #[serde(default)]
+    version: String,
+    /// Move the whole game with all its versions.
+    #[serde(default)]
+    whole: bool,
+}
+
+async fn relocate(State(app): State<App>, Json(r): Json<RelocateReq>) -> Res<Json<String>> {
+    let cfg = app.cfg.clone();
+    blocking(move || {
+        let kind = parse_kind(&r.kind)?;
+        let mut db = Db::open_default()?;
+        let id = if r.whole {
+            library::relocate_title(&cfg, &mut db, &find_title(&r.id)?, kind, &r.group, &r.name)?
+        } else {
+            library::relocate(&cfg, &mut db, &find(&cfg, &r.id)?, kind, &r.group, &r.name, &r.version)?
+        };
+        Ok(Json(id))
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+struct SeparateReq {
+    id: String,
+    separate: bool,
+}
+
+async fn set_separate(State(app): State<App>, Json(r): Json<SeparateReq>) -> Res<Json<&'static str>> {
+    let cfg = app.cfg.clone();
+    blocking(move || {
+        let mut db = Db::open_default()?;
+        library::set_separate(&cfg, &mut db, &find(&cfg, &r.id)?, r.separate)?;
+        Ok(Json("saved"))
+    })
+    .await
+}
+
 // ---------------------------------------------------------------- the server
 
 fn router(app: App) -> Router {
@@ -947,6 +1114,12 @@ fn router(app: App) -> Router {
         .route("/job", get(job_get))
         .route("/job/cancel", post(job_cancel))
         .route("/devices", get(devices))
+        .route("/snapshot", get(snapshot))
+        .route("/entry", get(entry))
+        .route("/saves", get(saves_list))
+        .route("/save", get(save_get).put(save_put))
+        .route("/relocate", post(relocate))
+        .route("/set-separate", post(set_separate))
         .layer(middleware::from_fn_with_state(app.clone(), require_token));
     let open = Router::new().route("/health", get(health)).route("/pair", post(pair));
     Router::new()

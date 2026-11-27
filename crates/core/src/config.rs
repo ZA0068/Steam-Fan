@@ -43,6 +43,9 @@ pub struct Config {
     pub steam_id: String,
     /// How each emulator system on the shelf is played.
     pub emulators: Vec<Emulator>,
+    /// Steam-Fan-Server addresses, tried in order (e.g. the Tailscale name, then the home
+    /// address). Empty: the shelf is the folder above, not a server.
+    pub servers: Vec<String>,
     /// macOS (or Linux without Steam): the Wine that starts Windows games, e.g.
     /// `["wine64"]`. Empty: CrossOver's if installed (bottle "Steam-Fan"), else `wine`.
     pub wine: Vec<String>,
@@ -91,6 +94,7 @@ impl Default for Config {
             steam_api_key: String::new(),
             steam_id: String::new(),
             emulators: default_emulators(),
+            servers: vec![],
             wine: vec![],
         }
     }
@@ -169,8 +173,27 @@ impl Config {
     }
 
     /// Is the shelf there right now? A NAS that is off shows as an empty or missing folder.
+    /// With a server: does it answer?
     pub fn shelf_online(&self) -> bool {
+        if self.server_mode() {
+            return crate::remote::active(self).is_some();
+        }
         shelf_online(&self.shelf())
+    }
+
+    /// The shelf is Steam-Fan-Server, not a folder.
+    pub fn server_mode(&self) -> bool {
+        !self.servers.is_empty()
+    }
+
+    /// Where game saves are kept: on the shelf, or (with a server) in this PC's copy of the
+    /// server's save areas, kept in step with it.
+    pub fn saves_root(&self) -> PathBuf {
+        if self.server_mode() {
+            data_dir().join("server-saves")
+        } else {
+            self.shelf().join("saves")
+        }
     }
 }
 

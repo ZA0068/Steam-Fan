@@ -60,7 +60,9 @@ Every request needs a token; each PC gets its own.
 sudo docker exec steam-fan-server steam-fan-server pair      # prints a 6-digit code, valid 10 minutes
 ```
 
-The app (step 2) asks for the code. By hand:
+In the app: **Settings → Steam-Fan-Server**, type the address (`http://10.0.0.36:8484`) and the code, press **Pair**.
+Add the Tailscale address too (**Add without pairing**: the same token works). Addresses are tried in order.
+From the command line: `steam-fan server pair http://10.0.0.36:8484 123456`. By hand:
 
 ```sh
 curl -X POST http://zainnas-1.snowy-rigel.ts.net:8484/api/pair \
@@ -134,11 +136,14 @@ Long work answers `{"job": n}`; follow it with `GET /api/job?id=n`.
 | `POST` | `/job/cancel` | `{id}` |
 | `GET` | `/devices` | paired PCs |
 
-## Next: step 2, the client
+## The app as a client
 
-- Settings > Server: address + pairing code; the app keeps the token.
-- Library, details, pictures from the server; Add game / Re-download / Check for update become requests.
-- **Play:** fetch the manifest, download only missing or changed files (resumable), check them, launch.
-- Saves upload to the server after playing; newer saves come down before.
-- Fallback order: Tailscale name → home IP → mounted share (if any) → offline with what's on the PC.
-- Then build the client on Windows (no Proton needed there).
+With a server address in Settings, the app works through the server:
+
+- **Library, details, pictures**: the library comes from `/snapshot`; pictures and screenshots are fetched when shown and kept in the cache.
+- **Install / Play**: the app reads the game's manifest and downloads only missing or changed files. Downloads resume and are checked with sha256.
+- **Saves**: they go up to the server after playing, and newer ones come down before playing. Nothing gets deleted.
+- **Add game, Re-download, Check for update, Move, Versions**: these are requests. The server does the work and patches the shelf.
+- **Verify**: checks this PC's copy against the server's manifest and downloads the bad files again. It never changes the shelf.
+- **Archived Steam games** still use the shelf folder, so mount it for those.
+- With no server answering, games that are already on the PC still play.

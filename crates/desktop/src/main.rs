@@ -286,12 +286,13 @@ struct Status {
 
 #[tauri::command]
 async fn status(app: State<'_, App>) -> Res<Status> {
-    let shelf = cfg(&app).shelf();
+    let c = cfg(&app);
     // a NAS that is off can make the mount hang: give up after 4 seconds
+    // (with a server: whether it answers)
     let online = blocking(move || {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let _ = tx.send(steam_fan_core::config::shelf_online(&shelf));
+            let _ = tx.send(c.shelf_online());
         });
         Ok(rx.recv_timeout(std::time::Duration::from_secs(4)).unwrap_or(false))
     })
@@ -694,13 +695,28 @@ fn redownload(handle: tauri::AppHandle, app: State<'_, App>, id: String, version
 }
 
 #[tauri::command]
-async fn check_update(id: String) -> Res<String> {
-    blocking(move || steam_fan_core::source::check_update(&find(&id)?).map_err(err)).await
+async fn check_update(app: State<'_, App>, id: String) -> Res<String> {
+    let cfg = cfg(&app);
+    blocking(move || {
+        let g = find(&id)?;
+        if cfg.server_mode() {
+            return steam_fan_core::remote::check_update(&cfg, &g).map_err(err);
+        }
+        steam_fan_core::source::check_update(&g).map_err(err)
+    })
+    .await
 }
 
 #[tauri::command]
-async fn page_images(url: String) -> Res<Vec<String>> {
-    blocking(move || artwork::page_images(&url).map_err(err)).await
+async fn page_images(app: State<'_, App>, url: String) -> Res<Vec<String>> {
+    let cfg = cfg(&app);
+    blocking(move || {
+        if cfg.server_mode() {
+            return steam_fan_core::remote::page_images(&cfg, &url).map_err(err);
+        }
+        artwork::page_images(&url).map_err(err)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -727,6 +743,14 @@ async fn import_inspect(app: State<'_, App>, path: String) -> Res<import::Inspec
 fn import_place(handle: tauri::AppHandle, app: State<'_, App>, source: String, kind: Kind, group: String, name: String, version: String) -> u64 {
     let cfg = cfg(&app);
     app.jobs.spawn(&handle, &format!("Adding {name} to the shelf"), move |ctx: Ctx| {
+        if cfg.server_mode() {
+            let mut db = Db::open_default()?;
+            let msg = steam_fan_core::remote::import(&cfg, &mut db, &PathBuf::from(&source), kind, &group, &name, &version, &ctx.cancel, &mut |s| ctx.status(s), &mut |p| ctx.progress(p))?;
+            if !steam::running() {
+                let _ = library::sync_to_steam(&cfg, &mut db, &[], false, false, |_| {});
+            }
+            return Ok(msg);
+        }
         let (dst, sums) = import::place(&cfg, &PathBuf::from(&source), kind, &group, &name, &version, &ctx.cancel, &mut |s| ctx.status(s), &mut |p| ctx.progress(p))?;
         ctx.status("reading the shelf");
         let mut db = Db::open_default()?;
@@ -797,6 +821,8 @@ struct SettingsView {
     config_path: String,
     secrets_path: String,
     keys: HashMap<&'static str, Key>,
+    /// whether this PC holds a server token
+    paired: bool,
 }
 
 #[tauri::command]
@@ -810,12 +836,14 @@ fn settings(app: State<'_, App>) -> SettingsView {
         config_path: Config::path().display().to_string(),
         secrets_path: secrets::path().display().to_string(),
         keys,
+        paired: !secrets::get(steam_fan_core::remote::TOKEN).is_empty(),
     }
 }
 
 #[tauri::command]
 fn settings_save(app: State<'_, App>, config: Config) -> Res<()> {
     config.save().map_err(err)?;
+    steam_fan_core::remote::forget();
     *app.cfg.lock().unwrap() = config;
     Ok(())
 }
@@ -826,6 +854,38 @@ fn secret_set(name: String, value: String) -> Res<()> {
         return Err("unknown key".into());
     }
     secrets::set(&name, &value).map_err(err)
+}
+
+/// Pair this PC with a Steam-Fan-Server using the code `steam-fan-server pair` shows.
+/// The address is added to the server list.
+#[tauri::command]
+async fn server_pair(app: State<'_, App>, url: String, code: String) -> Res<Vec<String>> {
+    let url = url.trim().trim_end_matches('/').to_string();
+    let u = url.clone();
+    blocking(move || steam_fan_core::remote::pair(&u, code.trim(), &steam_fan_core::remote::device_name()).map_err(err)).await?;
+    let mut c = cfg(&app);
+    if !c.servers.contains(&url) {
+        c.servers.insert(0, url);
+    }
+    c.save().map_err(err)?;
+    steam_fan_core::remote::forget();
+    let list = c.servers.clone();
+    *app.cfg.lock().unwrap() = c;
+    Ok(list)
+}
+
+/// Whether a server address answers.
+#[tauri::command]
+async fn server_reachable(url: String) -> Res<bool> {
+    blocking(move || {
+        let mut c = Config::default();
+        c.servers = vec![url];
+        steam_fan_core::remote::forget();
+        let ok = steam_fan_core::remote::active(&c).is_some();
+        steam_fan_core::remote::forget();
+        Ok(ok)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -860,7 +920,8 @@ fn human(bytes: u64) -> String {
 }
 
 /// Pictures for the interface: `art://localhost/<game id>/<cover|hero|logo|icon|wide>`.
-fn serve_art(req: &tauri::http::Request<Vec<u8>>) -> tauri::http::Response<Cow<'static, [u8]>> {
+/// With a server, pictures not cached yet are fetched from it first.
+fn serve_art(cfg: &Config, req: &tauri::http::Request<Vec<u8>>) -> tauri::http::Response<Cow<'static, [u8]>> {
     let path = req.uri().path().trim_start_matches('/');
     let reply = |status: u16, mime: &str, body: Vec<u8>| {
         tauri::http::Response::builder()
@@ -888,6 +949,13 @@ fn serve_art(req: &tauri::http::Request<Vec<u8>>) -> tauri::http::Response<Cow<'
         size: 0,
         built: 0,
     };
+    if cfg.server_mode() {
+        if let Some(name) = kind.strip_prefix("shot:") {
+            let _ = steam_fan_core::remote::screenshot(cfg, &stub, name);
+        } else {
+            let _ = steam_fan_core::remote::fetch_art(cfg, &stub);
+        }
+    }
     let file = if kind == "cover-thumb" {
         artwork::thumb(&stub)
     } else if let Some(name) = kind.strip_prefix("shot:") {
@@ -912,12 +980,16 @@ fn main() {
     let cfg = Config::load().unwrap_or_default();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .register_uri_scheme_protocol("art", |_, req| serve_art(&req))
+        .register_asynchronous_uri_scheme_protocol("art", |ctx, req, responder| {
+            // off the window's thread: fetching from the server can take a moment
+            let cfg = ctx.app_handle().state::<App>().cfg.lock().unwrap().clone();
+            std::thread::spawn(move || responder.respond(serve_art(&cfg, &req)));
+        })
         .manage(App { cfg: Mutex::new(cfg), jobs: Jobs::default() })
         .invoke_handler(tauri::generate_handler![
             library, status, details, jobs, job_cancel, refresh, sync_steam, install, remove, archive_upload,
             refresh_art, art_search, art_options, art_set_url, art_set_file, art_remove, import_inspect,
-            import_place, groups, info_save, screenshots_add, screenshot_remove, relocate, relocate_title, set_version, set_newest, set_separate, sync_steam_restart, verify, redownload, check_update, page_images, screenshots_add_urls, settings, settings_save, secret_set, shelf_reachable, open, play, human
+            import_place, groups, info_save, screenshots_add, screenshot_remove, relocate, relocate_title, set_version, set_newest, set_separate, sync_steam_restart, verify, redownload, check_update, page_images, screenshots_add_urls, settings, settings_save, secret_set, shelf_reachable, server_pair, server_reachable, open, play, human
         ])
         .setup(|app| {
             if let Some(w) = app.get_webview_window("main") {

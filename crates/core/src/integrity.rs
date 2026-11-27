@@ -214,6 +214,8 @@ pub struct Report {
     pub repaired: Vec<String>,
     /// PC files that couldn't be repaired: the shelf's copy of them is damaged too.
     pub pc_unfixed: Vec<String>,
+    /// What Steam-Fan-Server reported when it checked its own copy.
+    pub server_summary: Option<String>,
 }
 
 impl Report {
@@ -229,6 +231,9 @@ impl Report {
     }
 
     pub fn summary(&self) -> String {
+        if let Some(s) = &self.server_summary {
+            return format!("on the server: {s}");
+        }
         let mut parts = vec![];
         if self.recorded {
             parts.push("checksums recorded from the shelf copy".to_string());
@@ -388,6 +393,9 @@ pub fn verify_shelf(cfg: &Config, g: &Game, cancel: &Cancel, status: &mut dyn Fn
 
 /// Verify from this PC: its own copy if the game is on it, otherwise the shelf copy.
 pub fn verify(cfg: &Config, g: &Game, cancel: &Cancel, status: &mut dyn FnMut(&str), cb: &mut dyn FnMut(&Progress)) -> Result<Report> {
+    if cfg.server_mode() {
+        return crate::remote::verify(cfg, g, cancel, status, cb);
+    }
     if g.kind != crate::shelf::Kind::Steam && crate::library::is_installed(cfg, g) {
         verify_pc(cfg, g, cancel, status, cb)
     } else {

@@ -2,3 +2,9 @@
 /ui/node_modules
 /crates/desktop/gen
 /crates/desktop/binaries
+
+# SSH keys never go into the repository
+/steam-nas
+/steam-nas.pub
+id_*
+*.pem

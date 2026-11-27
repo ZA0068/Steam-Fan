@@ -33,7 +33,9 @@ export function mock(cmd) {
     case "details": return { info: { description: "", developer: "", released: "", links: [], page: "", download: "" }, screenshots: [], shelf_path: "/mnt/nas-games/…", local_path: "~/Games/NonSteam/…", saves_path: "/mnt/nas-games/saves/…", rom_command: null, history: [["2026-11-26 07:00", "on this PC"]], art_on_shelf: [] };
     case "jobs": return [];
     case "groups": return { fan: ["Kirby", "Sonic The Hedgehog", "Super Mario Bros"], nonsteam: ["Demos"], rom: ["wii", "WIIU", "Switch"] };
-    case "settings": return { config: { shelf: "/mnt/nas-games", fan_local: "~/Games/NonSteam", nonsteam_local: "~/Games/NonSteam/Non-Steam Games", rom_local: "~/Games/Emulation", steam_root: "~/.local/share/Steam", proton: "", steam_api_key: "", steam_id: "", emulators: [] }, config_path: "~/.config/steam-fan/config.toml", secrets_path: "~/.config/steam-fan/secrets.env", keys: { STEAMGRIDDB_API_KEY: { masked: "", source: "not set" }, STEAM_API_KEY: { masked: "", source: "not set" }, STEAM_ID: { masked: "", source: "not set" } } };
+    case "settings": return { config: { shelf: "/mnt/nas-games", fan_local: "~/Games/NonSteam", nonsteam_local: "~/Games/NonSteam/Non-Steam Games", rom_local: "~/Games/Emulation", steam_root: "~/.local/share/Steam", proton: "", steam_api_key: "", steam_id: "", emulators: [], servers: [], wine: [] }, config_path: "~/.config/steam-fan/config.toml", secrets_path: "~/.config/steam-fan/secrets.env", keys: { STEAMGRIDDB_API_KEY: { masked: "", source: "not set" }, STEAM_API_KEY: { masked: "", source: "not set" }, STEAM_ID: { masked: "", source: "not set" } }, paired: false };
+    case "server_pair": return [args.url];
+    case "server_reachable": return true;
     default: return null;
   }
 }
