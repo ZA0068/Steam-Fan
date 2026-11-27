@@ -39,7 +39,7 @@ pub fn rewritten_by_game(rel: &str) -> bool {
 }
 
 pub fn manifest_path(cfg: &Config, g: &Game) -> PathBuf {
-    crate::artwork::shelf_dir(cfg, g).join(FILE)
+    crate::artwork::version_dir(cfg, g).join(FILE)
 }
 
 pub fn hash_file(p: &Path, cancel: &Cancel, done: &mut dyn FnMut(u64)) -> Result<String> {

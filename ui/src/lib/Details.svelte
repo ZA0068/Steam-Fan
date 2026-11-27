@@ -63,6 +63,32 @@
   const kindText = $derived(
     game.kind === "Steam" ? "Steam" : game.kind === "Rom" ? `Emulator · ${game.system}` : game.platform === "Linux" ? "Linux" : "Windows · Proton",
   );
+  // a game kept in several versions: Play uses the one chosen here (or the newest)
+  let picker = $state(null);
+  const newest = $derived(game.versions?.find((v) => !v.old) ?? game.versions?.[0]);
+  const day = (secs) => new Date(secs * 1000).toISOString().slice(0, 10);
+  async function chooseVersion(folder) {
+    error = "";
+    try {
+      await api.setVersion(game.id, folder);
+      onchanged();
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  async function separate(yes) {
+    error = "";
+    try {
+      await api.setSeparate(game.version_id ?? game.id, yes);
+      await onchanged();
+      // the entry's id changes: back to the list it was in
+      onnav(game.kind, yes ? { group: game.name } : { group: "" });
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
   // pictures and the name can be changed by clicking them (not for Steam's own games)
   const editable = $derived(game.kind !== "Steam" && status.shelf_online);
   const kindFilter = $derived(
@@ -106,7 +132,7 @@
         <div class="meta">
           <button class="pill link" onclick={() => onnav(game.kind)} title="All {game.kind_label}">{game.kind_label}</button>
           {#if game.group}<button class="pill link" onclick={() => onnav(game.kind, { group: game.group })} title="Everything in {game.group}">{game.group}</button>{/if}
-          {#if game.version}<button class="pill ver link" onclick={() => onnav(game.kind, { group: game.group, search: game.name })} title="Every version of {game.name}">Version {game.version}</button>{/if}
+          {#if game.versions?.length > 1}<button class="pill ver link" onclick={() => picker?.focus()} title="Choose the version Play uses">{game.versions.length} versions</button>{/if}
           <button class="pill link" onclick={() => onnav(game.kind, kindFilter)} title="More like this">{kindText}</button>
           {#if game.size}<span class="pill">{human(game.size)}</span>{/if}
           {#if game.kind === "Steam"}
@@ -117,6 +143,25 @@
             <button class="pill link" onclick={() => onnav(game.kind, { filter: "shelf" })} title="Everything that's only on the shelf"><span class="dot"></span>On the shelf</button>
           {/if}
         </div>
+        {#if game.versions?.length}
+          <div class="vpick">
+            <span class="faint">Version</span>
+            <select class="input" bind:this={picker} value={game.pinned ? game.version_folder : ""} disabled={busy || !status.shelf_online}
+              onchange={(e) => chooseVersion(e.currentTarget.value)} title="The version Play uses (and copies to this PC)">
+              <option value="">Newest: {newest?.label ?? "?"}</option>
+              {#each game.versions as v}
+                <option value={v.folder}>{v.label}{v.built ? ` · ${day(v.built)}` : ""}{v.on_pc ? " · on this PC" : ""}{v.playable ? "" : " · no program found"}{v.old ? " · old" : ""}</option>
+              {/each}
+            </select>
+            <button class="btn small ghost" disabled={busy || !status.shelf_online} onclick={() => separate(true)}
+              title="These folders are different games, not versions of {game.name}: list each one on its own">Different games?</button>
+          </div>
+        {:else if game.in_collection}
+          <div class="vpick">
+            <button class="btn small ghost" disabled={busy || !status.shelf_online} onclick={() => separate(false)}
+              title="The games in {game.group} are versions of one game: list them as one, with a version menu">Versions of one game?</button>
+          </div>
+        {/if}
         <div class="buttons">
           {#if game.steam_id}
             <button class="btn play" onclick={() => run(api.play(game.id))}>▶ Play</button>
@@ -332,6 +377,8 @@
   .poster.edit .pen { right: 10px; bottom: 10px; }
   .poster.edit:hover { box-shadow: 0 18px 40px rgba(0, 0, 0, .55), 0 0 0 2px var(--accent); }
   .pill.link { cursor: pointer; color: inherit; font: inherit; }
+  .vpick { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
+  .vpick select { width: auto; min-width: 260px; max-width: 520px; padding: 7px 10px; background: rgba(10, 17, 30, .7); backdrop-filter: blur(6px); }
   .pill.link:hover { border-color: var(--accent); color: var(--text); background: rgba(31, 55, 95, .9); }
   .hero { overflow: hidden; }
   .hero { position: relative; min-height: 380px; display: flex; align-items: flex-end; }

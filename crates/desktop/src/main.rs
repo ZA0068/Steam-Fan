@@ -37,8 +37,17 @@ fn db() -> Res<Db> {
     Db::open_default().map_err(err)
 }
 
+/// A game by id. A game kept in versions: the version Play uses (a version's own id: that version).
 fn find(id: &str) -> Res<Game> {
-    db()?.games().map_err(err)?.into_iter().find(|g| g.id == id).ok_or_else(|| format!("{id} is not in the library"))
+    library::resolve(&db()?.games().map_err(err)?, id).ok_or_else(|| format!("{id} is not in the library"))
+}
+
+/// The library entry with this id (all versions of a game).
+fn find_title(id: &str) -> Res<library::Title> {
+    let games = db()?.games().map_err(err)?;
+    let g = library::resolve(&games, id).ok_or_else(|| format!("{id} is not in the library"))?;
+    let tid = g.title_id();
+    library::titles(games.into_iter().filter(|x| x.title_id() == tid).collect()).into_iter().next().ok_or_else(|| format!("{id} is not in the library"))
 }
 
 /// Run blocking work off the window's thread.
@@ -59,11 +68,39 @@ struct ArtView {
     icon: Option<String>,
 }
 
+/// One version of a game kept in several.
+#[derive(Serialize)]
+struct VersionView {
+    /// Its own id (to act on this version only).
+    id: String,
+    /// Its folder name.
+    folder: String,
+    /// Shown: the folder name without the game's name in front.
+    label: String,
+    on_pc: bool,
+    playable: bool,
+    /// Program date (Unix seconds), 0: not known.
+    built: i64,
+    /// An "Old" folder: never the default.
+    old: bool,
+}
+
 #[derive(Serialize)]
 struct GameView {
+    /// The library entry's id: the same for all versions of a game.
     id: String,
     name: String,
+    /// The version Play uses (shown name; empty: the game has no versions).
     version: String,
+    /// Its folder name and own id.
+    version_folder: String,
+    version_id: String,
+    /// Every version, newest first (empty: no versions).
+    versions: Vec<VersionView>,
+    /// The version was chosen by hand (otherwise: the newest).
+    pinned: bool,
+    /// One of several different games in one folder (can be made versions of one game).
+    in_collection: bool,
     kind: Kind,
     kind_label: &'static str,
     group: String,
@@ -95,7 +132,7 @@ struct LibraryView {
 fn art_url(g: &Game, a: Art) -> Option<String> {
     let p = artwork::local(g, a)?;
     let v = std::fs::metadata(&p).and_then(|m| m.modified()).ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
-    Some(format!("art://localhost/{}/{}?v={v}", encode(&g.id), a.name()))
+    Some(format!("art://localhost/{}/{}?v={v}", encode(&g.title_id()), a.name()))
 }
 
 fn encode(s: &str) -> String {
@@ -161,10 +198,31 @@ async fn library(app: State<'_, App>) -> Res<LibraryView> {
     blocking(move || {
         let games = db()?.games().map_err(err)?;
         let local = local_manifests(&cfg);
-        let ids = steam_ids(&cfg);
-        let views = games
+        let mut ids = steam_ids(&cfg);
+        let views = library::titles(games)
             .into_iter()
-            .map(|g| {
+            .map(|t| {
+                let pinned = t.pinned;
+                let versions: Vec<VersionView> = t
+                    .versions
+                    .iter()
+                    .map(|v| VersionView {
+                        id: v.id.clone(),
+                        folder: v.version.clone(),
+                        label: v.version_label(),
+                        on_pc: library::is_installed(&cfg, v),
+                        playable: !v.program.is_empty(),
+                        built: v.built,
+                        old: steam_fan_core::shelf::is_old_version(&v.version),
+                    })
+                    .collect();
+                // before Steam's library is updated, a version's old Steam entry stands for the game
+                if !ids.contains_key(&t.id()) {
+                    if let Some(a) = t.versions.iter().find_map(|v| ids.get(&v.id).copied()) {
+                        ids.insert(t.id(), a);
+                    }
+                }
+                let g = t.game;
                 let (on_pc, fresh) = if g.kind == Kind::Steam {
                     let pc = local.get(&g.appid);
                     let shelf = Manifest { buildid: g.buildid.clone(), ..Default::default() };
@@ -180,15 +238,20 @@ async fn library(app: State<'_, App>) -> Res<LibraryView> {
                         logo: art_url(&g, Art::Logo),
                         icon: art_url(&g, Art::Icon),
                     },
-                    steam_id: if g.kind == Kind::Steam { Some(g.appid) } else { ids.get(&g.id).copied() },
+                    steam_id: if g.kind == Kind::Steam { Some(g.appid) } else { ids.get(&g.title_id()).copied() },
                     kind_label: g.kind.label(),
                     playable: g.kind == Kind::Steam || !g.program.is_empty(),
                     fresh: fresh.map(|f| f.label()),
                     fresh_code: fresh.map(|f| format!("{f:?}")),
                     on_pc,
-                    id: g.id,
+                    version: if g.version.is_empty() { String::new() } else { g.version_label() },
+                    version_id: g.id.clone(),
+                    id: g.title_id(),
                     name: g.name,
-                    version: g.version,
+                    in_collection: g.version.is_empty() && matches!(g.kind, Kind::Fan | Kind::NonSteam) && g.rel.split('/').count() >= 3,
+                    version_folder: g.version,
+                    versions,
+                    pinned,
                     kind: g.kind,
                     group: g.group,
                     system: g.system,
@@ -258,14 +321,23 @@ async fn details(app: State<'_, App>, id: String) -> Res<Details> {
             rom_command: (g.kind == Kind::Rom).then(|| {
                 steam_fan_core::launch::rom_command(&cfg, &g).map(|c| c.join(" ")).unwrap_or_else(|e| format!("{e:#}"))
             }),
-            history: db.events(Some(&g.id), 12).map_err(err)?.into_iter().map(|e| (e.ts, e.msg)).collect(),
+            history: {
+                // the game's own events and its version's, newest first
+                let mut h = db.events(Some(&g.id), 12).map_err(err)?;
+                if g.title_id() != g.id {
+                    h.extend(db.events(Some(&g.title_id()), 12).map_err(err)?);
+                    h.sort_by(|a, b| b.ts.cmp(&a.ts));
+                    h.truncate(12);
+                }
+                h.into_iter().map(|e| (e.ts, e.msg)).collect()
+            },
             art_on_shelf: if cfg.shelf_online() { artwork::shelf_pictures(&cfg, &g).into_iter().map(|(a, _)| a).collect() } else { vec![] },
             info: artwork::info(&g),
             screenshots: artwork::screenshots(&g)
                 .into_iter()
                 .map(|p| {
                     let n = p.file_name().unwrap().to_string_lossy().into_owned();
-                    let url = format!("art://localhost/{}/shot:{}", encode(&g.id), encode(&n));
+                    let url = format!("art://localhost/{}/shot:{}", encode(&g.title_id()), encode(&n));
                     (n, url)
                 })
                 .collect(),
@@ -492,6 +564,48 @@ async fn relocate(app: State<'_, App>, id: String, kind: Kind, group: String, na
         let g = find(&id)?;
         let mut db = db()?;
         library::relocate(&cfg, &mut db, &g, kind, &group, &name, &version).map_err(err)
+    })
+    .await
+}
+
+/// Move or rename a whole game with all its versions.
+#[tauri::command]
+async fn relocate_title(app: State<'_, App>, id: String, kind: Kind, group: String, name: String) -> Res<String> {
+    let cfg = cfg(&app);
+    blocking(move || {
+        let t = find_title(&id)?;
+        let mut db = db()?;
+        library::relocate_title(&cfg, &mut db, &t, kind, &group, &name).map_err(err)
+    })
+    .await
+}
+
+/// A folder of several games: separate games (true) or one game in versions (false).
+#[tauri::command]
+async fn set_separate(app: State<'_, App>, id: String, separate: bool) -> Res<()> {
+    let cfg = cfg(&app);
+    blocking(move || {
+        let g = find(&id)?;
+        let mut db = db()?;
+        library::set_separate(&cfg, &mut db, &g, separate).map_err(err)
+    })
+    .await
+}
+
+/// Choose the version Play uses ("" = always the newest).
+#[tauri::command]
+async fn set_version(app: State<'_, App>, id: String, version: String) -> Res<()> {
+    let cfg = cfg(&app);
+    blocking(move || {
+        let t = find_title(&id)?;
+        library::set_version(&cfg, &t, &version).map_err(err)?;
+        artwork::mirror(&cfg, &t.game);
+        let label = t.versions.iter().find(|v| v.version == version).map(|v| v.version_label());
+        db()?.log(&t.id(), &match label {
+            Some(l) => format!("Play uses version {l}"),
+            None => "Play uses the newest version".into(),
+        });
+        Ok(())
     })
     .await
 }
@@ -750,6 +864,7 @@ fn serve_art(req: &tauri::http::Request<Vec<u8>>) -> tauri::http::Response<Cow<'
         buildid: String::new(),
         installdir: String::new(),
         size: 0,
+        built: 0,
     };
     let file = if kind == "cover-thumb" {
         artwork::thumb(&stub)
@@ -780,7 +895,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             library, status, details, jobs, job_cancel, refresh, sync_steam, install, remove, archive_upload,
             refresh_art, art_search, art_options, art_set_url, art_set_file, art_remove, import_inspect,
-            import_place, groups, info_save, screenshots_add, screenshot_remove, relocate, sync_steam_restart, verify, redownload, check_update, page_images, screenshots_add_urls, settings, settings_save, secret_set, shelf_reachable, open, play, human
+            import_place, groups, info_save, screenshots_add, screenshot_remove, relocate, relocate_title, set_version, set_separate, sync_steam_restart, verify, redownload, check_update, page_images, screenshots_add_urls, settings, settings_save, secret_set, shelf_reachable, open, play, human
         ])
         .setup(|app| {
             if let Some(w) = app.get_webview_window("main") {

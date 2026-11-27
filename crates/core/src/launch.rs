@@ -19,10 +19,13 @@ pub fn find_game(cfg: &Config, db: &mut Db, id: &str) -> Result<Game> {
     let renamed = db.renames().ok().and_then(|r| r.get(id).cloned());
     let id = renamed.as_deref().unwrap_or(id);
     let find = |db: &Db| -> Result<Option<Game>> {
-        let mut games = db.games()?;
-        let Some(i) = games.iter().position(|g| g.id == id) else { return Ok(None) };
-        crate::library::find_programs(cfg, db, &mut games[i..=i], &[], false, |_| {})?;
-        Ok(Some(games.swap_remove(i)))
+        let games = db.games()?;
+        // a game kept in versions: the version Play uses
+        let Some(g) = crate::library::resolve(&games, id) else { return Ok(None) };
+        let mut one = [g];
+        crate::library::find_programs(cfg, db, &mut one, &[], false, |_| {})?;
+        let [g] = one;
+        Ok(Some(g))
     };
     if let Some(g) = find(db)? {
         return Ok(g);
@@ -79,6 +82,28 @@ pub fn game_running(dir: &Path) -> bool {
 }
 
 /// Start a fan or non-Steam game. `cmd` is what Steam passed as %command%.
+/// Steam passes the program its entry knew. When another version was chosen since,
+/// the program of that version (in the same games folder on this PC) is put in its place.
+pub fn retarget(cfg: &Config, g: &Game, cmd: &[String]) -> Vec<String> {
+    if g.version.is_empty() || g.program.is_empty() {
+        return cmd.to_vec();
+    }
+    let want = g.local_path(cfg).join(&g.program);
+    // the folder that holds every version on this PC
+    let mut versions = g.local_path(cfg);
+    versions.pop();
+    cmd.iter()
+        .map(|a| {
+            let p = Path::new(a.trim_matches('"'));
+            if p.starts_with(&versions) && !p.starts_with(g.local_path(cfg)) && crate::shelf::is_program(&a.to_lowercase()) {
+                want.to_string_lossy().into_owned()
+            } else {
+                a.clone()
+            }
+        })
+        .collect()
+}
+
 pub fn run_program(cfg: &Config, db: &Db, g: &Game, cmd: &[String]) -> Result<i32> {
     if cmd.is_empty() {
         bail!("Steam passed no command; the launch options must end with %command%");
@@ -106,6 +131,9 @@ pub fn run_program(cfg: &Config, db: &Db, g: &Game, cmd: &[String]) -> Result<i3
             }
         }
     }
+    // Steam's entry may still point at the version played before: start the chosen one
+    let cmd = retarget(cfg, g, cmd);
+    let cmd = &cmd[..];
     db.log(&g.id, "started");
     // Start in the program's own folder. Steam would use the shortcut's "Start in"
     // folder, but on the first Play that folder didn't exist yet (the game was only

@@ -80,19 +80,61 @@ fn is_image(name: &str) -> Option<&'static str> {
 
 // ---------------------------------------------------------------- places
 
-/// `<shelf>/artwork/<kind folder>/<game>`
-pub fn shelf_dir(cfg: &Config, g: &Game) -> PathBuf {
+fn art_base(cfg: &Config, g: &Game, rel: &str) -> PathBuf {
     let base = cfg.shelf().join("artwork");
     match g.kind {
-        Kind::Rom => base.join("roms").join(&g.system).join(&g.rel),
+        Kind::Rom => base.join("roms").join(&g.system).join(rel),
         Kind::Steam => base.join("steam").join(g.appid.to_string()),
-        k => base.join(k.folder()).join(&g.rel),
+        k => base.join(k.folder()).join(rel),
     }
+}
+
+/// `<shelf>/artwork/<kind folder>/<game>`: pictures and info, shared by all versions of a game.
+pub fn shelf_dir(cfg: &Config, g: &Game) -> PathBuf {
+    art_base(cfg, g, &g.title_rel())
+}
+
+/// `<shelf>/artwork/<kind folder>/<game>/<version>`: what belongs to one version (its checksums).
+pub fn version_dir(cfg: &Config, g: &Game) -> PathBuf {
+    art_base(cfg, g, &g.rel)
 }
 
 /// The copy on this PC.
 pub fn cache_dir(g: &Game) -> PathBuf {
-    crate::config::data_dir().join("art").join(format!("{:08x}", crc32fast::hash(g.id.as_bytes())))
+    crate::config::data_dir().join("art").join(format!("{:08x}", crc32fast::hash(g.title_id().as_bytes())))
+}
+
+/// Pictures and info that were set on one version (before versions were shown as one game)
+/// become the whole game's, when it has none yet. Returns whether anything was taken.
+pub fn adopt_version_art(cfg: &Config, title: &Game, versions: &[Game]) -> bool {
+    let dst = shelf_dir(cfg, title);
+    if !pictures_in(&dst).is_empty() {
+        return false;
+    }
+    for v in versions {
+        let src = version_dir(cfg, v);
+        let pics = pictures_in(&src);
+        if pics.is_empty() {
+            continue;
+        }
+        if fs::create_dir_all(&dst).is_err() {
+            return false;
+        }
+        for (_, p) in pics {
+            let _ = fs::copy(&p, dst.join(p.file_name().unwrap()));
+        }
+        for extra in ["info.toml"] {
+            if src.join(extra).is_file() && !dst.join(extra).exists() {
+                let _ = fs::copy(src.join(extra), dst.join(extra));
+            }
+        }
+        let shots = src.join("screenshots");
+        if shots.is_dir() && !dst.join("screenshots").exists() {
+            let _ = crate::transfer::copy_tree(&shots, &dst.join("screenshots"), &|_: &Path| false, &crate::transfer::Cancel::default(), &mut |_| {});
+        }
+        return true;
+    }
+    false
 }
 
 fn pictures_in(dir: &Path) -> Vec<(String, PathBuf)> {
@@ -523,6 +565,7 @@ mod tests {
             buildid: String::new(),
             installdir: String::new(),
             size: 0,
+            built: 0,
         }
     }
 
@@ -600,6 +643,10 @@ pub struct Info {
     pub download: String,
     /// What the download link served last time (size, date), to notice a newer upload.
     pub download_stamp: String,
+    /// The version Play uses, when the game is kept in several (its folder name).
+    /// Empty: the newest.
+    #[serde(default)]
+    pub default_version: String,
 }
 
 /// The info on this PC (copied from the shelf), or empty.

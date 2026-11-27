@@ -12,6 +12,15 @@ const games = [
   mk("fan", "Sonic The Hedgehog", "Sonic Worlds Delta"),
   mk("fan", "Super Mario Bros", "Super Mario 63", { on_pc: true, steam_id: 1 }),
   mk("fan", "Kirby", "Kirby's Dream Course DX"),
+  mk("fan", "Sonic The Hedgehog", "Sonic World", {
+    version: "DX 1.2.4", version_folder: "Sonic World DX 1.2.4", version_id: "fan:Sonic The Hedgehog/Sonic World/Sonic World DX 1.2.4", pinned: false, on_pc: true,
+    versions: [
+      { id: "v1", folder: "Sonic World DX 1.2.4", label: "DX 1.2.4", on_pc: true, playable: true, built: 1702425600, old: false },
+      { id: "v2", folder: "Sonic World Release 10", label: "Release 10", on_pc: false, playable: true, built: 1596153600, old: false },
+      { id: "v3", folder: "Sonic World Release 9", label: "Release 9", on_pc: false, playable: true, built: 1542585600, old: false },
+      { id: "v4", folder: "Old", label: "Old", on_pc: false, playable: true, built: 1390000000, old: true },
+    ],
+  }),
   mk("nonsteam", "Demos", "Rog and Roll"),
   mk("rom", "wii", "Super Mario Galaxy [VBKP]"),
   mk("rom", "WIIU", "SUPER MARIO 3D WORLD [ARDP]", { program: "" }),

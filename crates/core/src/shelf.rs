@@ -99,12 +99,40 @@ pub struct Game {
     pub buildid: String,
     pub installdir: String,
     pub size: u64,
+    /// When the program file was built (its date, Unix seconds): tells which version is newest.
+    #[serde(default)]
+    pub built: i64,
 }
 
 impl Game {
     /// The name with its version: `Sonic of the Ring (V 0.6)`.
     pub fn full_name(&self) -> String {
-        if self.version.is_empty() { self.name.clone() } else { format!("{} ({})", self.name, self.version) }
+        if self.version.is_empty() { self.name.clone() } else { format!("{} ({})", self.name, self.version_label()) }
+    }
+
+    /// The version without the game's name in front: `Sonic World Release 10` in
+    /// `Sonic World` is `Release 10`, `SurgeEngineDemo_v1.3` in `Sonic - Surge Engine` is `Demo v1.3`.
+    pub fn version_label(&self) -> String {
+        version_label(&self.name, &self.version)
+    }
+
+    /// Where the game's own folder is, relative to its kind's folder: for a version,
+    /// the folder that holds all its versions. Artwork, info and the Steam entry belong to it.
+    pub fn title_rel(&self) -> String {
+        if self.version.is_empty() {
+            self.rel.clone()
+        } else {
+            self.rel.rsplit_once('/').map_or(self.rel.clone(), |(p, _)| p.to_string())
+        }
+    }
+
+    /// The id of the library entry: the same for every version of a game.
+    pub fn title_id(&self) -> String {
+        if self.version.is_empty() {
+            self.id.clone()
+        } else {
+            Game::make_id(self.kind, &self.system, &self.title_rel())
+        }
     }
 
     pub fn make_id(kind: Kind, system: &str, rel: &str) -> String {
@@ -188,7 +216,7 @@ pub fn listing(path: &Path) -> std::io::Result<Vec<Entry>> {
         .flatten()
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
-            if (name.starts_with('.') && name != VERSIONS_MARKER) || SKIP.contains(&name.as_str()) {
+            if (name.starts_with('.') && name != VERSIONS_MARKER && name != COLLECTION_MARKER) || SKIP.contains(&name.as_str()) {
                 return None;
             }
             let ft = e.file_type().ok()?;
@@ -260,6 +288,11 @@ pub fn is_game_folder(path: &Path, items: &[Entry]) -> bool {
     if items.iter().any(|e| e.is_file && is_program(&e.name)) {
         return true;
     }
+    // Unreal games: Binaries/ + Engine/ + <Name>Game/ (UDK), or Engine/ + <Name>/Binaries/ (UE4)
+    let has_dir = |n: &str| items.iter().any(|e| e.is_dir && e.name.eq_ignore_ascii_case(n));
+    if has_dir("Engine") && (has_dir("Binaries") || items.iter().any(|e| e.is_dir && e.name.to_lowercase().ends_with("game") && e.name.len() > 4)) {
+        return true;
+    }
     let with_prog: Vec<&Entry> =
         items.iter().filter(|e| e.is_dir && has_top_program(&path.join(&e.name))).collect();
     if with_prog.iter().all(|e| BUILD_DIRS.contains(&e.name.to_lowercase().as_str())) {
@@ -268,10 +301,137 @@ pub fn is_game_folder(path: &Path, items: &[Entry]) -> bool {
     with_prog.len() < 2
 }
 
-/// A folder that holds versions of one game, not a group of games: it has the
-/// marker file (written when a version is added in the app), or every subfolder
-/// is named like a version (`0.2.5`, `V 0.6`, `v96`, `Beta 2`) and there's no program beside them.
+/// A folder or file name that Windows file sharing (SMB) can pass on as it is. A name with
+/// `:` shows up on the PC as an empty folder plus a garbled copy (`S6G8TJ~9`), so
+/// `Sonic: Codename Backstreet` becomes `Sonic - Codename Backstreet`.
+pub fn safe_name(s: &str) -> String {
+    let mut out = String::new();
+    for c in s.chars() {
+        match c {
+            ':' => out.push_str(" -"),
+            '*' | '?' | '"' | '<' | '>' | '|' | '\\' => out.push(' '),
+            c if (c as u32) < 32 => {}
+            c => out.push(c),
+        }
+    }
+    // no doubled spaces, no trailing dots or spaces (also lost over SMB)
+    let mut squeezed = String::new();
+    for w in out.split(' ').filter(|w| !w.is_empty()) {
+        if !squeezed.is_empty() {
+            squeezed.push(' ');
+        }
+        squeezed.push_str(w);
+    }
+    squeezed.trim_end_matches(['.', ' ']).to_string()
+}
+
+/// A folder that holds versions of one game, even if it has only one so far
+/// (written when a version is added in the app).
 pub const VERSIONS_MARKER: &str = ".steam-fan-versions";
+
+/// A folder that holds different games (Infinity Engine games, Sonic Adventure fan games...):
+/// each one is its own library entry, the folder is shown as their group.
+/// Without it, a folder holding several games is taken as one game in several versions.
+pub const COLLECTION_MARKER: &str = ".steam-fan-collection";
+
+/// Folders inside a game folder that are parts of a game, never a version of it.
+const NOT_VERSIONS: [&str; 10] =
+    ["engine", "binaries", "content", "redist", "_commonredist", "directx", "plugins", "__macosx", "prerequisites", "support"];
+
+/// A folder of earlier builds, kept for the record: never the default version.
+pub fn is_old_version(name: &str) -> bool {
+    static R: OnceLock<Regex> = OnceLock::new();
+    R.get_or_init(|| Regex::new(r"(?i)(^|[^a-z])old([^a-z]|$)|april\s*fool|media\s*kit").unwrap()).is_match(name)
+}
+
+/// Natural order key: `Release 10` after `Release 9`.
+fn natural(s: &str) -> Vec<(u64, String)> {
+    let mut out = vec![];
+    let mut num = String::new();
+    let mut txt = String::new();
+    for c in s.to_lowercase().chars() {
+        if c.is_ascii_digit() {
+            if !txt.is_empty() {
+                out.push((0, std::mem::take(&mut txt)));
+            }
+            num.push(c);
+        } else {
+            if !num.is_empty() {
+                out.push((num.parse::<u64>().unwrap_or(u64::MAX).saturating_add(1), String::new()));
+                num.clear();
+            }
+            txt.push(c);
+        }
+    }
+    if !num.is_empty() {
+        out.push((num.parse::<u64>().unwrap_or(u64::MAX).saturating_add(1), String::new()));
+    }
+    if !txt.is_empty() {
+        out.push((0, txt));
+    }
+    out
+}
+
+/// Versions of one game, newest first: not an "Old" folder, newest program date, then by name.
+pub fn sort_versions(v: &mut [Game]) {
+    v.sort_by(|a, b| {
+        let ka = (!is_old_version(&a.version), a.built, natural(&a.version));
+        let kb = (!is_old_version(&b.version), b.built, natural(&b.version));
+        kb.cmp(&ka)
+    });
+}
+
+/// `version` without `name` in front (see `Game::version_label`).
+pub fn version_label(name: &str, version: &str) -> String {
+    let squash = |s: &str| s.to_lowercase().chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>();
+    let v = version.trim();
+    let mut prefixes = vec![squash(name)];
+    // "Sonic - Surge Engine" holds "SurgeEngineDemo_v1.3"
+    for lead in ["sonicthehedgehog", "sonic"] {
+        if let Some(rest) = prefixes[0].strip_prefix(lead) {
+            if rest.len() >= 3 {
+                prefixes.push(rest.to_string());
+            }
+        }
+    }
+    for p in prefixes.iter().filter(|p| !p.is_empty()) {
+        // walk the original, matching the squashed prefix
+        let mut it = p.chars().peekable();
+        let mut cut = None;
+        for (i, c) in v.char_indices() {
+            if it.peek().is_none() {
+                cut = Some(i);
+                break;
+            }
+            if c.is_ascii_alphanumeric() {
+                if c.to_ascii_lowercase() == *it.peek().unwrap() {
+                    it.next();
+                } else {
+                    break;
+                }
+            }
+        }
+        if cut.is_none() && it.peek().is_none() {
+            cut = Some(v.len());
+        }
+        let Some(i) = cut else { continue };
+        // only at a word's end: "Sonic Worlds" doesn't start with "Sonic World "
+        let next = v[i..].chars().next();
+        if !next.map_or(true, |c| !c.is_alphanumeric() || c.is_ascii_uppercase() || c.is_ascii_digit()) {
+            continue;
+        }
+        let rest = v[i..].trim_start_matches(|c: char| " -_:.'".contains(c)).replace('_', " ");
+        // "Sonic Omens (3.2.0)" is "3.2.0"
+        let rest = rest.trim();
+        let rest = rest.strip_prefix('(').and_then(|r| r.strip_suffix(')')).unwrap_or(rest).trim();
+        if !rest.is_empty() {
+            let mut c = rest.chars();
+            let first = c.next().unwrap();
+            return first.to_uppercase().chain(c).collect();
+        }
+    }
+    v.replace('_', " ")
+}
 
 pub fn is_version_name(n: &str) -> bool {
     static R: OnceLock<Regex> = OnceLock::new();
@@ -414,6 +574,7 @@ fn blank(kind: Kind, system: &str, rel: String, name: String, group: String) -> 
         buildid: String::new(),
         installdir: String::new(),
         size: 0,
+        built: 0,
     }
 }
 
@@ -438,10 +599,12 @@ pub fn read_program_group(shelf: &Path, kind: Kind, group: &str) -> std::io::Res
             continue;
         }
         let items = listing(&epath)?;
-        if holds_versions(&items) {
-            // Sonic of the Ring/{0.2.5, V 0.5, V 0.6}: one game, several versions
+        let marked = |m: &str| items.iter().any(|x| x.is_file && x.name == m);
+        let versions = marked(VERSIONS_MARKER) || (!marked(COLLECTION_MARKER) && !is_game_folder(&epath, &items));
+        if versions {
+            // Sonic World/{Release 1 ... Release 10, DX 1.2.4}: one game, several versions
             subgroups.push((e.name.clone(), mtime(&epath)));
-            for v in items.iter().filter(|v| v.is_dir) {
+            for v in items.iter().filter(|v| v.is_dir && !NOT_VERSIONS.contains(&v.name.to_lowercase().as_str())) {
                 let mut g = blank(kind, "", format!("{group}/{}/{}", e.name, v.name), e.name.clone(), group.into());
                 g.version = v.name.clone();
                 games.push(g);
@@ -593,6 +756,15 @@ mod tests {
         touch(&f.join("Sonic The Hedgehog/Sonic Network Land v96/Sonic Network Land.exe"));
         touch(&f.join("Sonic The Hedgehog/Sonic Worlds/.steam-fan-versions"));
         touch(&f.join("Sonic The Hedgehog/Sonic Worlds/Delta/sw.exe"));
+        // a folder of different games, marked
+        touch(&f.join("Others/Infinity/.steam-fan-collection"));
+        touch(&f.join("Others/Infinity/Omens/o.exe"));
+        touch(&f.join("Others/Infinity/Arcadia/a.exe"));
+        // an Unreal (UDK) game is one game, not four
+        touch(&f.join("Sonic The Hedgehog/Sonic Souls/Binaries/Win32/UDK.exe"));
+        touch(&f.join("Sonic The Hedgehog/Sonic Souls/Engine/Config/x.ini"));
+        touch(&f.join("Sonic The Hedgehog/Sonic Souls/UDKGame/Content/y.upk"));
+        touch(&f.join("Sonic The Hedgehog/Sonic Souls/Install Sonic Souls/setup.exe"));
         let mut all = vec![];
         for g in ["Super Mario Bros", "Sonic The Hedgehog", "Others", "Phantasy Star"] {
             all.extend(read_program_group(s, Kind::Fan, g).unwrap().games);
@@ -606,7 +778,10 @@ mod tests {
                 "fan:Sonic The Hedgehog/Sonic Network Land v96",
                 "fan:Sonic The Hedgehog/Sonic of the Ring/0.2.5",
                 "fan:Sonic The Hedgehog/Sonic of the Ring/V 0.6",
+                "fan:Sonic The Hedgehog/Sonic Souls",
                 "fan:Sonic The Hedgehog/Sonic Worlds/Delta",
+                "fan:Others/Infinity/Arcadia",
+                "fan:Others/Infinity/Omens",
                 "fan:Others/Pack/A",
                 "fan:Others/Pack/B",
                 "fan:Others/Solo.exe",
@@ -616,8 +791,11 @@ mod tests {
         let sotr = &all[3];
         assert_eq!((sotr.name.as_str(), sotr.version.as_str(), sotr.group.as_str()), ("Sonic of the Ring", "0.2.5", "Sonic The Hedgehog"));
         assert_eq!(all[4].full_name(), "Sonic of the Ring (V 0.6)");
-        assert_eq!(all[5].version, "Delta", "marker file: versions even with one");
-        assert_eq!(all[6].group, "Pack");
+        assert_eq!(all[6].version, "Delta", "marker file: versions even with one");
+        assert_eq!((all[7].group.as_str(), all[7].version.as_str()), ("Infinity", ""), "a collection: separate games");
+        let pack = &all[9];
+        assert_eq!((pack.name.as_str(), pack.version.as_str(), pack.group.as_str()), ("Pack", "A", "Others"), "a folder of builds: one game in versions");
+        assert_eq!((pack.title_id().as_str(), pack.title_rel().as_str()), ("fan:Others/Pack", "Others/Pack"));
         for v in ["0.2.5", "V 0.6", "v96", "Beta 2", "1.4.2b"] {
             assert!(is_version_name(v), "{v}");
         }
@@ -658,5 +836,44 @@ mod tests {
         assert_eq!(st.games[0].name, "Portal 2");
         assert_eq!(st.games[0].buildid, "42");
         assert!(st.unchanged(s));
+    }
+
+    #[test]
+    fn version_names_and_order() {
+        let label = |n: &str, v: &str| version_label(n, v);
+        assert_eq!(label("Sonic World", "Sonic World Release 10"), "Release 10");
+        assert_eq!(label("Sonic World", "Sonic World DX 1.2.4"), "DX 1.2.4");
+        assert_eq!(label("Sonic - Surge Engine", "SurgeEngineDemo_v1.3"), "Demo v1.3");
+        assert_eq!(label("Sonic Omens", "Sonic Omens (3.2.0)"), "3.2.0");
+        assert_eq!(label("Sonic Before The Sequel", "Sonic Before the Sequel plus"), "Plus");
+        assert_eq!(label("Sonic of the Ring", "V 0.6"), "V 0.6");
+        assert_eq!(label("Sonic Boll (Series)", "Sonic Bolls 2"), "Sonic Bolls 2", "not cut in the middle of a word");
+        assert_eq!(label("Sonic Momentum", "Sonic_Momentum_Beta_Edition_m1_8"), "Beta Edition m1 8");
+        assert!(is_old_version("Old") && is_old_version("Sonic Eclipse (OLD)") && is_old_version("Poker Boll (April Fools)"));
+        assert!(!is_old_version("Golden") && !is_old_version("Bolder"));
+
+        let v = |name: &str, built: i64| {
+            let mut g = blank(Kind::Fan, "", format!("S/W/{name}"), "W".into(), "S".into());
+            g.version = name.into();
+            g.built = built;
+            g
+        };
+        let mut vs = vec![v("Release 9", 100), v("Old", 900), v("Release 10", 200), v("DX 1.2.4", 300)];
+        sort_versions(&mut vs);
+        let order: Vec<_> = vs.iter().map(|g| g.version.as_str()).collect();
+        assert_eq!(order, ["DX 1.2.4", "Release 10", "Release 9", "Old"], "newest program first, an Old folder last");
+        // no dates known yet: by name, numbers counted as numbers
+        let mut vs = vec![v("Release 9", 0), v("Release 10", 0), v("Release 2", 0)];
+        sort_versions(&mut vs);
+        assert_eq!(vs[0].version, "Release 10");
+    }
+
+    #[test]
+    fn names_the_share_can_carry() {
+        assert_eq!(safe_name("Sonic: Codename Backstreet"), "Sonic - Codename Backstreet");
+        assert_eq!(safe_name("Sonic 3: SMS"), "Sonic 3 - SMS");
+        assert_eq!(safe_name("Sonic - Exe finally snaps?"), "Sonic - Exe finally snaps");
+        assert_eq!(safe_name("Demo v1.0. "), "Demo v1.0");
+        assert_eq!(safe_name("Sonic World"), "Sonic World");
     }
 }

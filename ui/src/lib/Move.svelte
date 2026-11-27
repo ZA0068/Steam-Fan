@@ -5,14 +5,18 @@
   let { game, onclose, onmoved } = $props();
   // svelte-ignore state_referenced_locally
   let kind = $state(game.kind);
+  // a game kept in versions: the whole game moves, or just the version Play uses
+  // svelte-ignore state_referenced_locally
+  const hasVersions = (game.versions?.length ?? 0) > 0;
+  let whole = $state(true);
   // svelte-ignore state_referenced_locally
   const parts = game.id.slice(game.id.indexOf(":") + 1).split("/");
   // svelte-ignore state_referenced_locally
-  let version = $state(game.version ?? "");
+  let version = $state(game.version_folder ?? "");
   // svelte-ignore state_referenced_locally
-  let group = $state(game.kind === "Rom" ? game.system : parts.slice(0, game.version ? -2 : -1).join("/"));
+  let group = $state(game.kind === "Rom" ? game.system : parts.slice(0, -1).join("/"));
   // svelte-ignore state_referenced_locally
-  let name = $state((game.version ? parts.at(-2) : parts.at(-1)).replace(/\.(exe|x86_64|appimage)$/i, ""));
+  let name = $state(parts.at(-1).replace(/\.(exe|x86_64|appimage)$/i, ""));
   let groups = $state({});
   let error = $state("");
   let working = $state(false);
@@ -26,7 +30,9 @@
     error = "";
     working = true;
     try {
-      const id = await api.relocate(game.id, kind, group.trim(), name.trim(), kind === "Rom" ? "" : version.trim());
+      const id = hasVersions && whole
+        ? await api.relocateTitle(game.id, kind, group.trim(), name.trim())
+        : await api.relocate(game.version_id ?? game.id, kind, group.trim(), name.trim(), kind === "Rom" ? "" : version.trim());
       onmoved(id);
     } catch (e) {
       error = String(e);
@@ -47,6 +53,12 @@
     </header>
     <div class="body">
       <p class="muted">The folder moves on the shelf, and its saves, artwork, screenshots, history and the copy on this PC go with it. Its Steam entry stays the same, with its play time, and is updated the next time Steam's library is updated.</p>
+      {#if hasVersions}
+        <div class="kinds">
+          <button class="kind" class:on={whole} onclick={() => (whole = true)}>The whole game ({game.versions.length} versions)</button>
+          <button class="kind" class:on={!whole} onclick={() => (whole = false)}>Only version {game.version}</button>
+        </div>
+      {/if}
       {#if kinds.length > 1}
         <div class="kinds">
           {#each kinds as k}
@@ -62,7 +74,7 @@
         </label>
         <label class="field"><span>Name</span><input class="input" bind:value={name} /></label>
       </div>
-      {#if kind !== "Rom"}
+      {#if kind !== "Rom" && !(hasVersions && whole)}
         <label class="field ver"><span>Version <i class="faint">(optional)</i></span><input class="input" bind:value={version} placeholder="e.g. v96: keeps several versions of this game side by side" /></label>
         <p class="faint small">A group can have a subgroup: <span class="mono">Sonic The Hedgehog/Classic</span>. With a version, the game goes into <span class="mono">{group || "…"}/{name || "…"}/{version}</span>.</p>
       {/if}

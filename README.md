@@ -178,7 +178,7 @@ The script:
 Open **Steam-Fan** from the app menu.
 
 - **Library:** a cover grid of everything on the shelf, grouped by kind or by group (Sonic, Kirby, wii, ...). Search at the top; the slider at the bottom changes the cover size. "on PC" marks games copied to this PC.
-- **Getting around, like Steam:** the ‹ › arrows at the top go back and forward through where you've been (sections, games, their tabs); so do the mouse's side buttons and Alt+←/→. Next to them, the path ("Fan games › Sonic Boll (Series) › Boll Deluxe") can be clicked. A game's tags lead to their section: its kind, its group, all its versions, Windows/Linux, on this PC or only on the shelf. Section titles in a list open just that group.
+- **Getting around, like Steam:** the ‹ › arrows at the top go back and forward through where you've been (sections, games, their tabs); so do the mouse's side buttons and Alt+←/→. Next to them, the path ("Fan games › Sonic Boll (Series) › Boll Deluxe") can be clicked. A game's tags lead to their section: its kind, its group, Windows/Linux, on this PC or only on the shelf. Section titles in a list open just that group.
 - **A game's page:** a big banner with the logo, then (click the cover or logo to change it, the title to rename it):
   - **Play** (through Steam), **Copy to this PC** / **Remove from PC** (saves go to the shelf first).
   - For Steam games: **Install from shelf** when Steam is down, **Copy to shelf** when this PC has the newer version.
@@ -232,7 +232,8 @@ steam-fan launch <id> %command%   what Steam runs when you press Play
 
 ```text
 <shelf>/fangames/<group>/<game>/              Sonic The Hedgehog/Sonic Mania Plus, ...
-<shelf>/fangames/<group>/<subgroup>/<game>/
+<shelf>/fangames/<group>/<game>/<version>/    Sonic World/Sonic World Release 10, ...: one game, several versions
+<shelf>/fangames/<group>/<collection>/<game>/ Sonic - Infinity Engine/...: different games (marked)
 <shelf>/nonsteam/<group>/<game>/              Demos/..., same rules as fangames
 <shelf>/roms/<system>/<GAMES>/<game>/         wii, WIIU, Switch: one folder or file per game
 <shelf>/steam/<appid>/                        the Steam archive (SteamCMD on the NAS fills it)
@@ -240,7 +241,18 @@ steam-fan launch <id> %command%   what Steam runs when you press Play
 <shelf>/artwork/                              pictures picked or uploaded in the app
 ```
 
-**Which folder is a game.** A folder is one game when a program sits directly in it. It's also one game when its programs are only in build folders like `bin/` or `x64/`, or when fewer than two subfolders have programs. Otherwise it's a group of games. Folders that hold only zip files or source code are listed as "no program found" and left out of Steam.
+**Which folder is a game.** A folder is one game when a program sits directly in it. It's also one game when its programs are only in build folders like `bin/` or `x64/`, when fewer than two subfolders have programs, or when it's laid out like an Unreal game (`Binaries/`, `Engine/`, `<Name>Game/`). Folders that hold only zip files or source code are listed as "no program found" and left out of Steam.
+
+**Versions.** A folder holding several games (`Sonic World/` with `Sonic World Release 1` ... `Release 10`, `Sonic World DX 1.2.4`) is **one game in several versions**: one library entry, one Steam entry, and a **Version** menu on its page, like Steam's betas.
+- **Play uses the newest version.** That's the version whose program file is the newest build; folders called `Old` are never picked.
+- **Or a version you choose.** The choice is kept with the game's info on the shelf, so every PC and the server agree.
+- **Switching versions:** the Steam entry stays the same, with its playtime and pictures. The next Play copies the chosen version to the PC if it isn't there yet.
+- **Saves:** each version has its own.
+- **Moving or renaming:** Move/Rename moves the whole game or just one version.
+
+**Collections.** A folder of *different* games (`Sonic - Infinity Engine/`, `Sonic Adventure/` with Blast, Remix, SX...) is marked as a collection: each game is its own entry, and the folder is shown as their group. Switch between the two on a game's page ("Different games?" / "Versions of one game?"). That writes a small marker file into the folder: `.steam-fan-collection`, or `.steam-fan-versions` for a folder with just one version so far.
+
+**Names.** Windows file sharing can't pass on `:` in a name: such a folder shows up on the PC as an empty folder plus a garbled copy (`S6G8TJ~9`). Steam-Fan never makes such names: `Sonic: Codename Backstreet` becomes `Sonic - Codename Backstreet`.
 
 **Emulator systems.** Each system folder in `roms/` needs an entry under **Settings > Emulators**, with the file types and the command to start it. The examples cover Dolphin (`wii`), Cemu (`WIIU`) and Ryujinx (`Switch`), using the Linux versions of those emulators. Install them first: `dolphin-emu`, `cemu`, `ryujinx`. Systems without an entry, like `Nintendo 64` and `XBOX 360`, which hold source code right now, are shown in the sidebar and skipped. Wii U update and DLC folders are skipped too. Install those into Cemu itself.
 

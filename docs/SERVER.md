@@ -109,7 +109,8 @@ Long work answers `{"job": n}`; follow it with `GET /api/job?id=n`.
 |---|---|---|
 | `GET` | `/health` | no token: name, version, shelf found, number of games |
 | `POST` | `/pair` | no token: `{code, device}` → `{token}` |
-| `GET` | `/library` | every game, with its pictures, link and update state |
+| `GET` | `/library` | one entry per game, with its pictures, link and update state; a game kept in several versions lists them (`versions`, newest first) and is shown as the one Play uses |
+| `POST` | `/set-version` | `{id, version}`: the version Play uses, for every PC (`""`: the newest) |
 | `GET` | `/game?id=` | one game: info, screenshots, history, checksums kept |
 | `GET` | `/manifest?id=` | its files: path, size, mtime, sha256 |
 | `GET` | `/file?id=&path=` | one file; `Range` supported |

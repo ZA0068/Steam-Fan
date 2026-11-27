@@ -23,7 +23,7 @@
       (view === "all" || (view === "pc" ? g.on_pc : g.kind === view)) &&
       (!group || g.group === group) &&
       (!filter || (keep[filter] ?? (() => true))(g)) &&
-      (!q || g.name.toLowerCase().includes(q) || g.group.toLowerCase().includes(q) || (g.version ?? "").toLowerCase().includes(q)));
+      (!q || g.name.toLowerCase().includes(q) || g.group.toLowerCase().includes(q) || (g.versions ?? []).some((v) => v.label.toLowerCase().includes(q))));
   });
 
   // sections: by kind on the overview pages, by group (Sonic, Kirby, wii...) inside a kind
@@ -113,11 +113,11 @@
         <div class="grid" style="--w:{zoom}px">
           {#each s.games as g (g.id)}
             {@const b = badge(g)}
-            <button class="card" onclick={() => onopen(g.id)} title={g.version ? `${g.name} (${g.version})` : g.name}>
+            <button class="card" onclick={() => onopen(g.id)} title={g.versions?.length > 1 ? `${g.name}: ${g.versions.length} versions, Play uses ${g.version}` : g.name}>
               <div class="art">
                 <Cover game={g} />
                 {#if b}<span class="badge {b.cls}">{b.text}</span>{/if}
-                {#if g.version}<span class="ver">{g.version}</span>{/if}
+                {#if g.versions?.length > 1}<span class="ver">{g.version} <b>· {g.versions.length}</b></span>{:else if g.version}<span class="ver">{g.version}</span>{/if}
               </div>
               <div class="title">{g.name}</div>
             </button>

@@ -35,6 +35,7 @@ impl Db {
              CREATE TABLE IF NOT EXISTS art (
                  id TEXT PRIMARY KEY, sgdb_id INTEGER, checked TEXT NOT NULL DEFAULT (datetime('now')));
              CREATE TABLE IF NOT EXISTS renames (old TEXT PRIMARY KEY, new TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS built (id TEXT PRIMARY KEY, built INTEGER NOT NULL);
              CREATE TABLE IF NOT EXISTS events (
                  ts TEXT NOT NULL DEFAULT (datetime('now','localtime')), game TEXT NOT NULL, msg TEXT NOT NULL);",
         )?;
@@ -52,6 +53,7 @@ impl Db {
              CREATE TABLE programs (id TEXT PRIMARY KEY, program TEXT NOT NULL, platform TEXT NOT NULL);
              CREATE TABLE art (id TEXT PRIMARY KEY, sgdb_id INTEGER, checked TEXT NOT NULL DEFAULT (datetime('now')));
              CREATE TABLE renames (old TEXT PRIMARY KEY, new TEXT NOT NULL);
+             CREATE TABLE built (id TEXT PRIMARY KEY, built INTEGER NOT NULL);
              CREATE TABLE events (ts TEXT NOT NULL DEFAULT (datetime('now','localtime')), game TEXT NOT NULL, msg TEXT NOT NULL);",
         )?;
         Ok(Db { conn })
@@ -83,12 +85,14 @@ impl Db {
     /// All games from the last shelf read, without touching the shelf.
     pub fn games(&self) -> Result<Vec<Game>> {
         let progs = self.programs()?;
+        let built = self.built()?;
         let mut all: Vec<Game> = self.groups()?.into_values().flat_map(|g| g.games).collect();
         for g in &mut all {
             if let Some((p, plat)) = progs.get(&g.id) {
                 g.program = p.clone();
                 g.platform = *plat;
             }
+            g.built = built.get(&g.id).copied().unwrap_or(0);
         }
         all.sort_by(|a, b| (a.kind, a.group.to_lowercase(), a.name.to_lowercase()).cmp(&(b.kind, b.group.to_lowercase(), b.name.to_lowercase())));
         Ok(all)
@@ -113,6 +117,21 @@ impl Db {
             "INSERT INTO programs (id, program, platform) VALUES (?1, ?2, ?3)
              ON CONFLICT(id) DO UPDATE SET program = excluded.program, platform = excluded.platform",
             params![id, program, plat],
+        )?;
+        Ok(())
+    }
+
+    /// Program dates (see `Game::built`).
+    pub fn built(&self) -> Result<HashMap<String, i64>> {
+        let mut st = self.conn.prepare("SELECT id, built FROM built")?;
+        let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    pub fn set_built(&self, id: &str, built: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO built (id, built) VALUES (?1, ?2) ON CONFLICT(id) DO UPDATE SET built = excluded.built",
+            params![id, built],
         )?;
         Ok(())
     }
@@ -153,6 +172,8 @@ impl Db {
         tx.execute("UPDATE programs SET id = ?2 WHERE id = ?1", params![old, new])?;
         tx.execute("DELETE FROM art WHERE id = ?2", params![old, new])?;
         tx.execute("UPDATE art SET id = ?2 WHERE id = ?1", params![old, new])?;
+        tx.execute("DELETE FROM built WHERE id = ?2", params![old, new])?;
+        tx.execute("UPDATE built SET id = ?2 WHERE id = ?1", params![old, new])?;
         tx.execute("UPDATE events SET game = ?2 WHERE game = ?1", params![old, new])?;
         // a game renamed twice before Steam saw the first rename
         tx.execute("UPDATE renames SET new = ?2 WHERE new = ?1", params![old, new])?;

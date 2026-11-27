@@ -210,7 +210,21 @@ async fn health(State(app): State<App>) -> Res<Json<Health>> {
 }
 
 #[derive(Serialize)]
+struct VersionOut {
+    id: String,
+    folder: String,
+    label: String,
+    built: i64,
+    old: bool,
+}
+
+#[derive(Serialize)]
 struct GameOut {
+    /// The library entry's id: the same for every version of a game.
+    title_id: String,
+    /// Every version, newest first (empty: no versions); `game` is the one Play uses.
+    versions: Vec<VersionOut>,
+    pinned: bool,
     #[serde(flatten)]
     game: Game,
     /// Pictures the server has for it.
@@ -219,17 +233,51 @@ struct GameOut {
     update: Option<updates::Update>,
 }
 
-fn game_out(app: &App, g: Game) -> GameOut {
+fn game_out(app: &App, t: library::Title) -> GameOut {
+    let g = t.game;
     let art = Art::all().into_iter().filter(|a| artwork::local(&g, *a).is_some()).collect();
     let has_link = !artwork::info(&g).download.trim().is_empty();
     let update = app.updates.get(&g.id);
-    GameOut { game: g, art, has_link, update }
+    let versions = t
+        .versions
+        .iter()
+        .map(|v| VersionOut { id: v.id.clone(), folder: v.version.clone(), label: v.version_label(), built: v.built, old: steam_fan_core::shelf::is_old_version(&v.version) })
+        .collect();
+    GameOut { title_id: g.title_id(), versions, pinned: t.pinned, game: g, art, has_link, update }
 }
 
+/// One entry per game; a game kept in several versions lists them, with the one Play uses.
 async fn library_list(State(app): State<App>) -> Res<Json<Vec<GameOut>>> {
     blocking(move || {
         let games = Db::open_default()?.games()?;
-        Ok(Json(games.into_iter().map(|g| game_out(&app, g)).collect()))
+        Ok(Json(library::titles(games).into_iter().map(|t| game_out(&app, t)).collect()))
+    })
+    .await
+}
+
+fn find_title(id: &str) -> Result<library::Title> {
+    let games = Db::open_default()?.games()?;
+    let g = library::resolve(&games, id).with_context(|| format!("{id} is not in the library"))?;
+    let tid = g.title_id();
+    library::titles(games.into_iter().filter(|x| x.title_id() == tid).collect()).into_iter().next().context("not in the library")
+}
+
+#[derive(Deserialize)]
+struct SetVersionReq {
+    id: String,
+    /// The version's folder name; empty: always the newest.
+    #[serde(default)]
+    version: String,
+}
+
+/// Choose the version Play uses, for every PC.
+async fn set_version(State(app): State<App>, Json(r): Json<SetVersionReq>) -> Res<Json<&'static str>> {
+    let cfg = app.cfg.clone();
+    blocking(move || {
+        let t = find_title(&r.id)?;
+        library::set_version(&cfg, &t, &r.version)?;
+        artwork::mirror(&cfg, &t.game);
+        Ok(Json("saved"))
     })
     .await
 }
@@ -252,13 +300,14 @@ struct Details {
 
 async fn game_details(State(app): State<App>, Query(q): Query<IdQ>) -> Res<Json<Details>> {
     blocking(move || {
-        let g = find(&app.cfg, &q.id)?;
+        let t = find_title(&q.id)?;
+        let g = t.game.clone();
         let db = Db::open_default()?;
         let checksums = integrity::manifest_path(&app.cfg, &g).is_file();
         let history = db.events(Some(&g.id), 20)?.into_iter().map(|e| (e.ts, e.msg)).collect();
         let screenshots = artwork::screenshots(&g).into_iter().filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())).collect();
         let info = artwork::info(&g);
-        Ok(Json(Details { game: game_out(&app, g), info, screenshots, history, checksums }))
+        Ok(Json(Details { game: game_out(&app, t), info, screenshots, history, checksums }))
     })
     .await
 }
@@ -863,6 +912,7 @@ fn router(app: App) -> Router {
         .route("/art", get(art_get).put(art_put).delete(art_delete))
         .route("/screenshot", post(screenshot_add).delete(screenshot_delete))
         .route("/info", put(info_put))
+        .route("/set-version", post(set_version))
         .route("/page-images", get(page_images))
         .route("/screenshots-from-urls", post(screenshots_from_urls))
         .route("/refresh", post(refresh))

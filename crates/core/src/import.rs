@@ -176,6 +176,7 @@ pub fn unpack(source: &Path) -> Result<PathBuf> {
     if low.ends_with(".zip") {
         let mut z = zip::ZipArchive::new(fs::File::open(source)?)?;
         z.extract(&dest).context("cannot unpack the zip file")?;
+        keep_zip_dates(&mut z, &dest);
     } else {
         let ok = Command::new("bsdtar").arg("-xf").arg(source).arg("-C").arg(&dest).status().map_or(false, |s| s.success())
             || Command::new("7z").arg("x").arg("-y").arg(format!("-o{}", dest.display())).arg(source).status().map_or(false, |s| s.success())
@@ -186,6 +187,38 @@ pub fn unpack(source: &Path) -> Result<PathBuf> {
     }
     let _ = fs::remove_dir_all(dest.join("__MACOSX"));
     Ok(game_root(&dest))
+}
+
+/// Files keep the dates stored in the zip (bsdtar and 7z do this themselves): a version's
+/// program date tells which version is newest.
+fn keep_zip_dates(z: &mut zip::ZipArchive<fs::File>, dest: &Path) {
+    for i in 0..z.len() {
+        let Ok(f) = z.by_index_raw(i) else { continue };
+        if f.is_dir() {
+            continue;
+        }
+        let (Some(rel), Some(d)) = (f.enclosed_name(), f.last_modified()) else { continue };
+        let Some(t) = zip_time(d.year(), d.month(), d.day(), d.hour(), d.minute(), d.second()) else { continue };
+        if let Ok(file) = fs::File::options().write(true).open(dest.join(rel)) {
+            let _ = file.set_modified(t);
+        }
+    }
+}
+
+/// A zip date (no time zone; taken as UTC) as a point in time.
+fn zip_time(y: u16, mo: u8, d: u8, h: u8, mi: u8, s: u8) -> Option<std::time::SystemTime> {
+    if !(1980..2200).contains(&y) || !(1..=12).contains(&mo) || !(1..=31).contains(&d) {
+        return None;
+    }
+    // days since 1970-01-01 (Howard Hinnant's days_from_civil)
+    let (y, m) = (y as i64 - if mo <= 2 { 1 } else { 0 }, mo as i64);
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d as i64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    let secs = days * 86400 + h as i64 * 3600 + mi as i64 * 60 + s as i64;
+    Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs.max(0) as u64))
 }
 
 /// If a folder holds nothing but one folder, the game is in that one.
@@ -218,9 +251,9 @@ pub fn check_version_parent(parent: &Path, except: Option<&Path>) -> Result<()> 
 
 /// Where a new game would go on the shelf. With a version: `<group>/<name>/<version>`.
 pub fn destination(cfg: &Config, kind: Kind, group: &str, name: &str, version: &str) -> Result<PathBuf> {
-    let clean = |s: &str| s.replace('/', "-").trim().to_string();
+    let clean = |s: &str| shelf::safe_name(&s.replace('/', "-"));
     // the group may have a subgroup: "Sonic The Hedgehog/Classic"
-    let group = group.split('/').map(|p| p.trim()).filter(|p| !p.is_empty() && *p != "." && *p != "..").collect::<Vec<_>>().join("/");
+    let group = group.split('/').map(shelf::safe_name).filter(|p| !p.is_empty() && p != "." && p != "..").collect::<Vec<_>>().join("/");
     let (name, version) = (clean(name), clean(version));
     if group.is_empty() || name.is_empty() {
         bail!("give the game a name and a group");
@@ -336,5 +369,12 @@ mod tests {
         // a ROM is recognised by its type
         let (k, sys, _) = guess(&cfg, &["Galaxy/game.iso".to_string()]);
         assert_eq!((k, sys.as_str()), (Kind::Rom, "wii"));
+    }
+
+    #[test]
+    fn zip_dates() {
+        let t = zip_time(2025, 12, 15, 10, 30, 0).unwrap();
+        assert_eq!(t.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(), 1765794600);
+        assert!(zip_time(1979, 1, 1, 0, 0, 0).is_none());
     }
 }
