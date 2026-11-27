@@ -36,6 +36,7 @@ export const api = {
   relocate: (id, kind, group, name, version = "") => call("relocate", { id, kind, group, name, version }),
   relocateTitle: (id, kind, group, name) => call("relocate_title", { id, kind, group, name }),
   setVersion: (id, version) => call("set_version", { id, version }),
+  setNewest: (id, version) => call("set_newest", { id, version }),
   setSeparate: (id, separate) => call("set_separate", { id, separate }),
   syncSteamRestart: () => call("sync_steam_restart"),
   verify: (id) => call("verify", { id }),

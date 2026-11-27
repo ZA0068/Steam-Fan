@@ -101,6 +101,8 @@ struct GameView {
     pinned: bool,
     /// One of several different games in one folder (can be made versions of one game).
     in_collection: bool,
+    /// The first version in `versions` was marked as the newest by hand.
+    newest_marked: bool,
     kind: Kind,
     kind_label: &'static str,
     group: String,
@@ -203,6 +205,7 @@ async fn library(app: State<'_, App>) -> Res<LibraryView> {
             .into_iter()
             .map(|t| {
                 let pinned = t.pinned;
+                let newest_marked = t.newest_marked;
                 let versions: Vec<VersionView> = t
                     .versions
                     .iter()
@@ -252,6 +255,7 @@ async fn library(app: State<'_, App>) -> Res<LibraryView> {
                     version_folder: g.version,
                     versions,
                     pinned,
+                    newest_marked,
                     kind: g.kind,
                     group: g.group,
                     system: g.system,
@@ -592,6 +596,24 @@ async fn set_separate(app: State<'_, App>, id: String, separate: bool) -> Res<()
     .await
 }
 
+/// Mark a version as the newest ("" = work it out from names and dates).
+#[tauri::command]
+async fn set_newest(app: State<'_, App>, id: String, version: String) -> Res<()> {
+    let cfg = cfg(&app);
+    blocking(move || {
+        let t = find_title(&id)?;
+        library::set_newest(&cfg, &t, &version).map_err(err)?;
+        artwork::mirror(&cfg, &t.game);
+        let label = t.versions.iter().find(|v| v.version == version).map(|v| v.version_label());
+        db()?.log(&t.id(), &match label {
+            Some(l) => format!("{l} marked as the newest version"),
+            None => "the newest version is worked out again".into(),
+        });
+        Ok(())
+    })
+    .await
+}
+
 /// Choose the version Play uses ("" = always the newest).
 #[tauri::command]
 async fn set_version(app: State<'_, App>, id: String, version: String) -> Res<()> {
@@ -618,7 +640,7 @@ fn sync_steam_restart(handle: tauri::AppHandle, app: State<'_, App>) -> u64 {
         let was_running = steam::running();
         if was_running {
             ctx.status("quitting Steam");
-            let _ = std::process::Command::new("steam").arg("-shutdown").spawn();
+            steam_fan_core::platform::quit_steam(&cfg);
             let start = std::time::Instant::now();
             while steam::running() {
                 if start.elapsed().as_secs() > 90 {
@@ -636,7 +658,7 @@ fn sync_steam_restart(handle: tauri::AppHandle, app: State<'_, App>) -> u64 {
         if was_running {
             ctx.status("starting Steam");
             // on its own, so it keeps running when this window closes
-            let _ = std::process::Command::new("setsid").args(["-f", "steam"]).spawn();
+            steam_fan_core::platform::start_steam(&cfg);
         }
         Ok(format!("Steam library: {}{}", out.steam.summary(), if was_running { "; Steam is starting again" } else { "" }))
     })
@@ -815,7 +837,7 @@ fn shelf_reachable(path: String) -> bool {
 
 #[tauri::command]
 fn open(target: String) {
-    let _ = std::process::Command::new("xdg-open").arg(target).spawn();
+    steam_fan_core::platform::open(&target);
 }
 
 #[tauri::command]
@@ -895,7 +917,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             library, status, details, jobs, job_cancel, refresh, sync_steam, install, remove, archive_upload,
             refresh_art, art_search, art_options, art_set_url, art_set_file, art_remove, import_inspect,
-            import_place, groups, info_save, screenshots_add, screenshot_remove, relocate, relocate_title, set_version, set_separate, sync_steam_restart, verify, redownload, check_update, page_images, screenshots_add_urls, settings, settings_save, secret_set, shelf_reachable, open, play, human
+            import_place, groups, info_save, screenshots_add, screenshot_remove, relocate, relocate_title, set_version, set_newest, set_separate, sync_steam_restart, verify, redownload, check_update, page_images, screenshots_add_urls, settings, settings_save, secret_set, shelf_reachable, open, play, human
         ])
         .setup(|app| {
             if let Some(w) = app.get_webview_window("main") {

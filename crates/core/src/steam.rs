@@ -35,13 +35,9 @@ pub fn read_manifest(path: &Path) -> Option<Manifest> {
 
 // ---------------------------------------------------------------- the Steam app
 
-/// Is the Steam app running? Read straight from /proc, no tools needed.
+/// Is the Steam app running?
 pub fn running() -> bool {
-    let Ok(rd) = fs::read_dir("/proc") else { return false };
-    rd.flatten().any(|e| {
-        let comm = fs::read_to_string(e.path().join("comm")).unwrap_or_default();
-        matches!(comm.trim(), "steam" | "steamwebhelper")
-    })
+    crate::platform::steam_running()
 }
 
 /// Steam library folders (each has a `steamapps/` folder).

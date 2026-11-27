@@ -4,7 +4,7 @@ The shelf as a service. It runs in Docker on the NAS, next to the games, and doe
 the heavy work so the PC app doesn't have to:
 
 - **Catalog:** reads the shelf every 15 minutes (and when asked) and keeps the database.
-- **Downloads:** direct links (SFGHQ attachments, GitHub, itch.io files), Game Jolt game pages, Google Drive,
+- **Downloads:** direct links (SFGHQ attachments, itch.io files), GitHub projects' latest release, Game Jolt game pages, Google Drive,
   Dropbox and MEGA (megatools is in the image). Unpacks zip, 7z, rar and tar.
 - **Updates:** every 12 hours it asks each game's download link whether it serves a
   new file. It reports it, or with `SF_AUTO_UPDATE=replace` downloads it by itself.
@@ -111,6 +111,7 @@ Long work answers `{"job": n}`; follow it with `GET /api/job?id=n`.
 | `POST` | `/pair` | no token: `{code, device}` → `{token}` |
 | `GET` | `/library` | one entry per game, with its pictures, link and update state; a game kept in several versions lists them (`versions`, newest first) and is shown as the one Play uses |
 | `POST` | `/set-version` | `{id, version}`: the version Play uses, for every PC (`""`: the newest) |
+| `POST` | `/set-newest` | `{id, version}`: mark a version as the newest (`""`: worked out from names and dates) |
 | `GET` | `/game?id=` | one game: info, screenshots, history, checksums kept |
 | `GET` | `/manifest?id=` | its files: path, size, mtime, sha256 |
 | `GET` | `/file?id=&path=` | one file; `Range` supported |

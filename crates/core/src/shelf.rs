@@ -372,12 +372,67 @@ fn natural(s: &str) -> Vec<(u64, String)> {
     out
 }
 
-/// Versions of one game, newest first: not an "Old" folder, newest program date, then by name.
+/// The numbers in a version name: `V 0.6` is [0, 6], `0.2.5` is [0, 2, 5].
+fn numbers(s: &str) -> VerNum {
+    VerNum(s.split(|c: char| !c.is_ascii_digit()).filter(|p| !p.is_empty()).map(String::from).collect())
+}
+
+/// Version numbers in order. A part with a leading zero is a decimal: `1.06` comes before `1.3`.
+#[derive(PartialEq, Eq)]
+struct VerNum(Vec<String>);
+
+impl VerNum {
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl Ord for VerNum {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        for (a, b) in self.0.iter().zip(&other.0) {
+            let decimal = (a.len() > 1 && a.starts_with('0')) || (b.len() > 1 && b.starts_with('0'));
+            let o = if decimal {
+                // as fractions: "06" vs "3" is .06 vs .30
+                let w = a.len().max(b.len());
+                format!("{a:0<w$}").cmp(&format!("{b:0<w$}"))
+            } else {
+                let (x, y) = (a.trim_start_matches('0'), b.trim_start_matches('0'));
+                x.len().cmp(&y.len()).then(x.cmp(y))
+            };
+            if o.is_ne() {
+                return o;
+            }
+        }
+        self.0.len().cmp(&other.0.len())
+    }
+}
+
+impl PartialOrd for VerNum {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// A version name without its numbers (and a lone `v`): `V 0.6` and `0.2.5` are both "".
+fn stem(s: &str) -> String {
+    s.to_lowercase().split(|c: char| !c.is_ascii_alphabetic()).filter(|w| !w.is_empty() && *w != "v").collect::<Vec<_>>().join(" ")
+}
+
+/// Versions of one game, newest first. An "Old" folder always comes last.
+/// When every version is named alike apart from its numbers (`0.2.5`, `V 0.5`, `V 0.6`),
+/// the numbers decide. Otherwise (`Release 10`, `DX 1.2.4`) the newest program date
+/// decides; names break ties.
 pub fn sort_versions(v: &mut [Game]) {
+    let current: Vec<&Game> = v.iter().filter(|g| !is_old_version(&g.version)).collect();
+    let by_number = current.len() > 1
+        && current.iter().all(|g| !numbers(&g.version).is_empty())
+        && current.iter().all(|g| stem(&g.version) == stem(&current[0].version));
     v.sort_by(|a, b| {
-        let ka = (!is_old_version(&a.version), a.built, natural(&a.version));
-        let kb = (!is_old_version(&b.version), b.built, natural(&b.version));
-        kb.cmp(&ka)
+        let key = |g: &Game| {
+            let num = if by_number { numbers(&g.version) } else { VerNum(vec![]) };
+            (!is_old_version(&g.version), num, g.built, natural(&g.version))
+        };
+        key(b).cmp(&key(a))
     });
 }
 
@@ -862,6 +917,20 @@ mod tests {
         sort_versions(&mut vs);
         let order: Vec<_> = vs.iter().map(|g| g.version.as_str()).collect();
         assert_eq!(order, ["DX 1.2.4", "Release 10", "Release 9", "Old"], "newest program first, an Old folder last");
+        // Sonic of the Ring: numbered alike, so the numbers decide, not a re-unpacked copy's date
+        let mut vs = vec![v("V0.2.5", 1_795_000_000), v("0.2.5", 1_537_000_000), v("V 0.6", 1_765_000_000), v("V 0.5", 1_586_000_000)];
+        sort_versions(&mut vs);
+        let order: Vec<_> = vs.iter().map(|g| g.version.as_str()).collect();
+        assert_eq!(order, ["V 0.6", "V 0.5", "V0.2.5", "0.2.5"]);
+        // Surge Engine: v1.3 after v1.06
+        let mut vs = vec![v("SurgeEngineDemo_v1.06", 5), v("SurgeEngineDemo_v1.3", 4), v("SurgeEngineDemo_v1.01", 3)];
+        sort_versions(&mut vs);
+        let order: Vec<_> = vs.iter().map(|g| g.version.as_str()).collect();
+        assert_eq!(order, ["SurgeEngineDemo_v1.3", "SurgeEngineDemo_v1.06", "SurgeEngineDemo_v1.01"], "1.06 is before 1.3");
+        // Sonic World releases: 10 after 9
+        let mut vs = vec![v("Sonic World Release 9", 9), v("Sonic World Release 10", 1), v("Sonic World Release 2", 5)];
+        sort_versions(&mut vs);
+        assert_eq!(vs[0].version, "Sonic World Release 10");
         // no dates known yet: by name, numbers counted as numbers
         let mut vs = vec![v("Release 9", 0), v("Release 10", 0), v("Release 2", 0)];
         sort_versions(&mut vs);

@@ -1,6 +1,5 @@
 //! The terminal commands. Each returns the exit code.
 
-use std::os::unix::process::CommandExt;
 use steam_fan_core::{archive, import, library, steam, transfer, Config, Db, Game, Kind};
 
 fn setup() -> Result<(Config, Db), i32> {
@@ -61,9 +60,28 @@ pub fn steam(args: &[String]) -> i32 {
             }
         }
     }
-    let err = std::process::Command::new("steam").args(args).exec();
-    eprintln!("steam-fan: cannot start steam: {err}");
-    1
+    replace_with(std::process::Command::new("steam").args(args), "steam")
+}
+
+/// Become another program (Linux, macOS), or start it and wait (Windows).
+fn replace_with(cmd: &mut std::process::Command, what: &str) -> i32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let err = cmd.exec();
+        eprintln!("steam-fan: cannot start {what}: {err}");
+        1
+    }
+    #[cfg(not(unix))]
+    {
+        match cmd.status() {
+            Ok(s) => s.code().unwrap_or(0),
+            Err(err) => {
+                eprintln!("steam-fan: cannot start {what}: {err}");
+                1
+            }
+        }
+    }
 }
 
 /// A NAS that is off can make the mount hang; give it 15 seconds.
@@ -196,11 +214,9 @@ pub fn archive_upload(appid: u32) -> i32 {
 /// Open the library window, which is its own program next to this one.
 pub fn open_window() -> i32 {
     let me = std::env::current_exe().ok();
-    let beside = me.as_ref().and_then(|p| p.parent()).map(|d| d.join("steam-fan-app"));
+    let beside = me.as_ref().and_then(|p| p.parent()).map(|d| d.join(steam_fan_core::platform::exe_name("steam-fan-app")));
     let prog = beside.filter(|p| p.exists()).map(|p| p.into_os_string()).unwrap_or_else(|| "steam-fan-app".into());
-    let err = std::process::Command::new(&prog).exec();
-    eprintln!("steam-fan: cannot open the window ({err}). Run ./install.sh in the Steam-Fan folder.");
-    1
+    replace_with(&mut std::process::Command::new(&prog), "the window (run ./install.sh in the Steam-Fan folder)")
 }
 
 pub fn add(source: &str, kind: &str, group: &str, name: Option<&str>, version: &str) -> i32 {

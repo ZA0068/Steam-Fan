@@ -65,7 +65,21 @@
   );
   // a game kept in several versions: Play uses the one chosen here (or the newest)
   let picker = $state(null);
-  const newest = $derived(game.versions?.find((v) => !v.old) ?? game.versions?.[0]);
+  const newest = $derived(game.versions?.[0]);
+  // the version Verify, Check for update and Re-download work on (the one Play uses, unless picked)
+  let picked = $state(null);
+  const target = $derived(game.versions?.find((v) => v.id === picked) ?? game.versions?.find((v) => v.id === game.version_id) ?? null);
+  const targetId = $derived(target?.id ?? game.id);
+  async function markNewest() {
+    error = "";
+    try {
+      const undo = game.newest_marked && target?.id === newest?.id;
+      await api.setNewest(game.id, undo ? "" : target.folder);
+      onchanged();
+    } catch (e) {
+      error = String(e);
+    }
+  }
   const day = (secs) => new Date(secs * 1000).toISOString().slice(0, 10);
   async function chooseVersion(folder) {
     error = "";
@@ -148,7 +162,7 @@
             <span class="faint">Version</span>
             <select class="input" bind:this={picker} value={game.pinned ? game.version_folder : ""} disabled={busy || !status.shelf_online}
               onchange={(e) => chooseVersion(e.currentTarget.value)} title="The version Play uses (and copies to this PC)">
-              <option value="">Newest: {newest?.label ?? "?"}</option>
+              <option value="">Newest: {newest?.label ?? "?"}{game.newest_marked ? " (marked by you)" : ""}</option>
               {#each game.versions as v}
                 <option value={v.folder}>{v.label}{v.built ? ` · ${day(v.built)}` : ""}{v.on_pc ? " · on this PC" : ""}{v.playable ? "" : " · no program found"}{v.old ? " · old" : ""}</option>
               {/each}
@@ -272,11 +286,25 @@
         {#if game.kind !== "Steam"}
           <div class="box">
             <h4>Files</h4>
+            {#if game.versions?.length > 1}
+              <div class="vtarget">
+                <span class="faint">Version</span>
+                <select class="input" value={target?.id} onchange={(e) => { picked = e.currentTarget.value; updateMsg = ""; }} title="The version Verify, Check for update and Re-download work on">
+                  {#each game.versions as v, i}
+                    <option value={v.id}>{v.label}{i === 0 ? " · newest" : ""}{v.id === game.version_id ? " · Play uses it" : ""}{v.on_pc ? " · on this PC" : ""}</option>
+                  {/each}
+                </select>
+                <button class="btn small ghost" disabled={busy || !status.shelf_online || !target} onclick={markNewest}
+                  title={game.newest_marked && target?.id === newest?.id ? "Work out the newest from names and dates again" : "Treat this version as the newest: first in the list, and what Play uses unless you chose another"}>
+                  {game.newest_marked && target?.id === newest?.id ? "★ Newest (marked) · undo" : "★ Mark as newest"}
+                </button>
+              </div>
+            {/if}
             <p class="muted small">Like Steam's Verify integrity: checks the copy on this PC against the game's fingerprints and downloads any damaged or missing file again from the shelf. Settings and saves the game changed are kept. The shelf itself only changes when you add or re-download the game. Not on this PC yet: the shelf copy is checked instead and patched from the download link.</p>
             <div class="row">
-              <button class="btn small" disabled={busy || !status.shelf_online} onclick={() => run(api.verify(game.id))}>✔ Verify</button>
+              <button class="btn small" disabled={busy || !status.shelf_online} onclick={() => run(api.verify(targetId))}>✔ Verify</button>
               <button class="btn small" disabled={!info?.info?.download} title={info?.info?.download ? "" : "Add a download link under About > Edit"}
-                onclick={async () => { updateMsg = "Checking…"; try { updateMsg = await api.checkUpdate(game.id); } catch (e) { updateMsg = String(e); } }}>⟳ Check for update</button>
+                onclick={async () => { updateMsg = "Checking…"; try { updateMsg = await api.checkUpdate(targetId); } catch (e) { updateMsg = String(e); } }}>⟳ Check for update</button>
               <button class="btn small" disabled={busy || !status.shelf_online} onclick={() => (redl = { version: "", file: null })}>⬇ Re-download…</button>
             </div>
             {#if updateMsg}<p class="small note">{updateMsg}</p>{/if}
@@ -321,7 +349,7 @@
 {#if redl}
   <div class="overlay" role="presentation" onclick={(e) => e.target === e.currentTarget && (redl = null)}>
     <div class="modal small">
-      <header><h2>Download {game.name} again</h2></header>
+      <header><h2>Download {game.name}{target ? ` (${target.label})` : ""} again</h2></header>
       <div class="body">
         <div class="redl-src">
           <label class="radio"><input type="radio" name="src" checked={!redl.file} disabled={!info?.info?.download} onchange={() => (redl.file = null)} /> <span><b>From its link</b><br /><span class="faint mono">{info?.info?.download || "no link yet: add it under About > Edit"}</span></span></label>
@@ -329,7 +357,7 @@
           {#if redl.file}<button class="btn small" onclick={async () => { const f = await pickFile({ archives: true }); if (f) redl.file = f; }}>Choose another file</button>{/if}
         </div>
         <hr />
-        <label class="radio"><input type="radio" name="how" checked={!redl.asVersion} onchange={() => (redl.asVersion = false)} /> <span><b>Replace the shelf copy</b><br /><span class="faint">For a damaged copy. The old one is kept until the new one is in place; saves stay. The copy on this PC is removed (saves backed up first) and copied fresh on the next Play.</span></span></label>
+        <label class="radio"><input type="radio" name="how" checked={!redl.asVersion} onchange={() => (redl.asVersion = false)} /> <span><b>Replace the shelf copy{target ? ` of ${target.label}` : ""}</b><br /><span class="faint">For a damaged copy. The old one is kept until the new one is in place; saves stay. The copy on this PC is removed (saves backed up first) and copied fresh on the next Play.</span></span></label>
         <label class="radio"><input type="radio" name="how" checked={redl.asVersion} onchange={() => (redl.asVersion = true)} /> <span><b>Add as a new version</b><br /><span class="faint">For an update: keeps this one, adds the download beside it.</span></span></label>
         {#if redl.asVersion}
           <label class="field"><span>Version name</span><input class="input" bind:value={redl.version} placeholder="e.g. V 0.8" /></label>
@@ -338,7 +366,7 @@
       </div>
       <footer>
         <button class="btn" onclick={() => (redl = null)}>Cancel</button>
-        <button class="btn primary" disabled={(redl.asVersion && !redl.version.trim()) || (!redl.file && !info?.info?.download)} onclick={() => { run(api.redownload(game.id, redl.asVersion ? redl.version.trim() : null, redl.file)); redl = null; }}>{redl.file ? "Use this file" : "Download"}</button>
+        <button class="btn primary" disabled={(redl.asVersion && !redl.version.trim()) || (!redl.file && !info?.info?.download)} onclick={() => { run(api.redownload(targetId, redl.asVersion ? redl.version.trim() : null, redl.file)); redl = null; }}>{redl.file ? "Use this file" : "Download"}</button>
       </footer>
     </div>
   </div>
@@ -378,6 +406,8 @@
   .poster.edit:hover { box-shadow: 0 18px 40px rgba(0, 0, 0, .55), 0 0 0 2px var(--accent); }
   .pill.link { cursor: pointer; color: inherit; font: inherit; }
   .vpick { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
+  .vtarget { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 4px 0 10px; }
+  .vtarget select { width: auto; min-width: 200px; max-width: 100%; padding: 6px 9px; }
   .vpick select { width: auto; min-width: 260px; max-width: 520px; padding: 7px 10px; background: rgba(10, 17, 30, .7); backdrop-filter: blur(6px); }
   .pill.link:hover { border-color: var(--accent); color: var(--text); background: rgba(31, 55, 95, .9); }
   .hero { overflow: hidden; }

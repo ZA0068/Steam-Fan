@@ -43,6 +43,9 @@ pub struct Config {
     pub steam_id: String,
     /// How each emulator system on the shelf is played.
     pub emulators: Vec<Emulator>,
+    /// macOS (or Linux without Steam): the Wine that starts Windows games, e.g.
+    /// `["wine64"]`. Empty: CrossOver's if installed (bottle "Steam-Fan"), else `wine`.
+    pub wine: Vec<String>,
 }
 
 /// One system folder in `roms/` and the emulator that plays it.
@@ -83,11 +86,12 @@ impl Default for Config {
             fan_local: "~/Games/NonSteam".into(),
             nonsteam_local: "~/Games/NonSteam/Non-Steam Games".into(),
             rom_local: "~/Games/Emulation".into(),
-            steam_root: "~/.local/share/Steam".into(),
+            steam_root: crate::platform::default_steam_root(),
             proton: String::new(),
             steam_api_key: String::new(),
             steam_id: String::new(),
             emulators: default_emulators(),
+            wine: vec![],
         }
     }
 }

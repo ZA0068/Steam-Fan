@@ -225,6 +225,7 @@ struct GameOut {
     /// Every version, newest first (empty: no versions); `game` is the one Play uses.
     versions: Vec<VersionOut>,
     pinned: bool,
+    newest_marked: bool,
     #[serde(flatten)]
     game: Game,
     /// Pictures the server has for it.
@@ -243,7 +244,7 @@ fn game_out(app: &App, t: library::Title) -> GameOut {
         .iter()
         .map(|v| VersionOut { id: v.id.clone(), folder: v.version.clone(), label: v.version_label(), built: v.built, old: steam_fan_core::shelf::is_old_version(&v.version) })
         .collect();
-    GameOut { title_id: g.title_id(), versions, pinned: t.pinned, game: g, art, has_link, update }
+    GameOut { title_id: g.title_id(), versions, pinned: t.pinned, newest_marked: t.newest_marked, game: g, art, has_link, update }
 }
 
 /// One entry per game; a game kept in several versions lists them, with the one Play uses.
@@ -268,6 +269,18 @@ struct SetVersionReq {
     /// The version's folder name; empty: always the newest.
     #[serde(default)]
     version: String,
+}
+
+/// Mark a version as the newest, for every PC ("": worked out from names and dates).
+async fn set_newest(State(app): State<App>, Json(r): Json<SetVersionReq>) -> Res<Json<&'static str>> {
+    let cfg = app.cfg.clone();
+    blocking(move || {
+        let t = find_title(&r.id)?;
+        library::set_newest(&cfg, &t, &r.version)?;
+        artwork::mirror(&cfg, &t.game);
+        Ok(Json("saved"))
+    })
+    .await
 }
 
 /// Choose the version Play uses, for every PC.
@@ -415,7 +428,11 @@ async fn file(State(app): State<App>, Query(q): Query<FileQ>, req: Request) -> R
 }
 
 async fn serve(p: PathBuf, req: Request) -> Res<Response> {
-    let res = ServeFile::new(p).oneshot(req).await.map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    // serving a file can't fail as a service (errors are answers like 404)
+    let res = match ServeFile::new(p).oneshot(req).await {
+        Ok(r) => r,
+        Err(never) => match never {},
+    };
     Ok(res.map(Body::new))
 }
 
@@ -913,6 +930,7 @@ fn router(app: App) -> Router {
         .route("/screenshot", post(screenshot_add).delete(screenshot_delete))
         .route("/info", put(info_put))
         .route("/set-version", post(set_version))
+        .route("/set-newest", post(set_newest))
         .route("/page-images", get(page_images))
         .route("/screenshots-from-urls", post(screenshots_from_urls))
         .route("/refresh", post(refresh))

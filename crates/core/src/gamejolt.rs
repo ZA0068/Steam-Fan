@@ -54,7 +54,7 @@ fn get_json(url: &str) -> Result<Value> {
     let r = match r {
         Ok(r) => r,
         Err(ureq::Error::Status(404, _)) => bail!("Game Jolt doesn't know this game (removed, or the link is wrong)"),
-        Err(e) => return Err(e).context("cannot reach Game Jolt"),
+        Err(e) => return Err(crate::source::net_error(url, e)),
     };
     serde_json::from_reader(r.into_reader()).context("Game Jolt answered with something that isn't JSON")
 }

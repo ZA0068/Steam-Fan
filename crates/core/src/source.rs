@@ -3,6 +3,8 @@
 //! * Plain file links (itch.io/GameJolt CDN links, GitHub releases, Dropbox) are downloaded directly.
 //! * Google Drive share links are turned into their download address.
 //! * Game Jolt game pages (`gamejolt.com/games/<name>/<id>`): the newest Windows build (see `gamejolt`).
+//! * GitHub projects (`github.com/STJr/SRB2`, `.../releases`): the latest release's Windows
+//!   game file, e.g. `SRB2-v2215-Full.zip` (see `github`).
 //! * MEGA links need the `megatools` program (`sudo pacman -S megatools`).
 //! * Pages that need a browser (MediaFire, forum pages, captchas) can't be fetched:
 //!   the error says so, and the app offers to open the page instead.
@@ -25,6 +27,8 @@ pub enum Host {
     Mega,
     /// A Game Jolt game page: its number.
     GameJolt(u64),
+    /// A GitHub project's releases: owner, repo, tag (none: the latest).
+    GitHub(String, String, Option<String>),
     /// Needs a browser; the name says which site.
     Manual(&'static str),
 }
@@ -38,6 +42,9 @@ pub fn host_of(url: &str) -> Host {
     }
     if let Some(id) = crate::gamejolt::game_id(url) {
         return Host::GameJolt(id);
+    }
+    if let Some((o, r, t)) = crate::github::repo_of(url) {
+        return Host::GitHub(o, r, t);
     }
     if has("drive.google.com") || has("docs.google.com") {
         let id = url
@@ -85,7 +92,7 @@ fn direct(url: &str, dir: &Path, cancel: &Cancel, cb: &mut dyn FnMut(&Progress))
 fn direct_named(url: &str, name: Option<&str>, dir: &Path, cancel: &Cancel, cb: &mut dyn FnMut(&Progress)) -> Result<PathBuf> {
     // a long timeout: a game can be gigabytes
     let agent = ureq::AgentBuilder::new().timeout_connect(std::time::Duration::from_secs(20)).timeout_read(std::time::Duration::from_secs(120)).build();
-    let r = agent.get(url).set("User-Agent", UA).call().context("download failed")?;
+    let r = agent.get(url).set("User-Agent", UA).call().map_err(|e| net_error(url, e))?;
     let ctype = r.header("Content-Type").unwrap_or("").to_lowercase();
     if ctype.starts_with("text/html") {
         bail!(
@@ -154,6 +161,10 @@ pub fn fetch(url: &str, cancel: &Cancel, cb: &mut dyn FnMut(&Progress)) -> Resul
             let (u, b) = crate::gamejolt::resolve(id)?;
             direct_named(&u, Some(&b.filename), &dir, cancel, cb)
         }
+        Host::GitHub(o, r, t) => {
+            let a = crate::github::resolve(&o, &r, t.as_deref())?;
+            direct_named(&a.url, Some(&a.name), &dir, cancel, cb)
+        }
         Host::Manual(site) => bail!("{site} can't be downloaded automatically. Download it in your browser, then use Re-download > Use a file I downloaded."),
     }
 }
@@ -163,12 +174,13 @@ pub fn remote_stamp(url: &str) -> Result<Option<String>> {
     let u = match host_of(url) {
         Host::Direct(u) => u,
         Host::GameJolt(id) => return Ok(Some(crate::gamejolt::latest_build(id)?.stamp())),
+        Host::GitHub(o, r, t) => return Ok(Some(crate::github::resolve(&o, &r, t.as_deref())?.stamp())),
         _ => return Ok(None),
     };
     let r = match ureq::head(&u).set("User-Agent", UA).timeout(std::time::Duration::from_secs(20)).call() {
         Ok(r) => r,
-        Err(ureq::Error::Status(405, _)) => ureq::get(&u).set("User-Agent", UA).set("Range", "bytes=0-0").call()?,
-        Err(e) => return Err(e).context("cannot reach the download link"),
+        Err(ureq::Error::Status(405, _)) => ureq::get(&u).set("User-Agent", UA).set("Range", "bytes=0-0").call().map_err(|e| net_error(&u, e))?,
+        Err(e) => return Err(net_error(&u, e)),
     };
     let parts: Vec<String> = ["ETag", "Last-Modified", "Content-Length", "Content-Range"]
         .iter()
@@ -196,8 +208,42 @@ pub fn describe(url: &str) -> Result<String> {
                 b.size
             )
         }
+        Host::GitHub(o, r, t) => {
+            let a = crate::github::resolve(&o, &r, t.as_deref())?;
+            format!("GitHub {o}/{r}, release {}\n  file:  {} ({} bytes)\n  from:  {}", a.tag, a.name, a.size, a.url)
+        }
         Host::Manual(site) => format!("{site}: needs a browser"),
     })
+}
+
+/// A network error in words: what went wrong and what to try.
+pub fn net_error(url: &str, e: ureq::Error) -> anyhow::Error {
+    let host = url.split("//").nth(1).unwrap_or(url).split(['/', '?', ':']).next().unwrap_or(url).to_string();
+    match e {
+        ureq::Error::Status(code, _) => anyhow::anyhow!(
+            "{host} answered {code}{}",
+            match code {
+                401 | 403 => ": it refuses this download (it may need a login, or it blocks VPNs)",
+                404 | 410 => ": the file isn't there any more",
+                429 => ": too many requests, try again later",
+                520..=527 => ": the site's own server is broken behind Cloudflare, try later",
+                500..=599 => ": the site has a problem, try later",
+                _ => "",
+            }
+        ),
+        ureq::Error::Transport(t) => match t.kind() {
+            ureq::ErrorKind::Dns => anyhow::anyhow!(
+                "can't find {host}: this computer couldn't look up the site's address. \
+                 Is the internet down? A VPN or its DNS filter (Proton VPN's NetShield, for example) can block sites too: \
+                 try with the VPN off, or let the server download it"
+            ),
+            ureq::ErrorKind::ConnectionFailed | ureq::ErrorKind::Io => anyhow::anyhow!(
+                "can't connect to {host} ({t}): the site may be down, or a VPN or firewall blocks it"
+            ),
+            ureq::ErrorKind::InvalidUrl | ureq::ErrorKind::UnknownScheme => anyhow::anyhow!("that's not a web address: {url}"),
+            _ => anyhow::anyhow!("{host}: {t}"),
+        },
+    }
 }
 
 pub fn downloads_dir_clean() {
@@ -238,6 +284,9 @@ mod tests {
             Host::Direct("https://drive.usercontent.google.com/download?id=1AbC_d&export=download&confirm=t".into())
         );
         assert_eq!(host_of("https://www.dropbox.com/s/x/game.zip?dl=0"), Host::Direct("https://www.dropbox.com/s/x/game.zip?dl=1".into()));
+        assert_eq!(host_of("https://github.com/STJr/SRB2"), Host::GitHub("STJr".into(), "SRB2".into(), None));
+        let asset = "https://github.com/STJr/SRB2/releases/download/SRB2_release_2.2.15/SRB2-v2215-Full.zip";
+        assert_eq!(host_of(asset), Host::Direct(asset.into()));
         let sfghq = "https://sonicfangameshq.com/forums/dl-attach.php?uri=attachments/sonic-quantum-collision_sage2020_etherealspeed-zip.8819/";
         assert_eq!(host_of(sfghq), Host::Direct(sfghq.into()));
         assert_eq!(host_of("https://gamejolt.com/games/ChaosShards/415280"), Host::GameJolt(415280));
@@ -245,5 +294,14 @@ mod tests {
         assert_eq!(host_of("https://github.com/a/b/releases/download/v1/game.zip"), Host::Direct("https://github.com/a/b/releases/download/v1/game.zip".into()));
         assert_eq!(file_name_from("https://x/y/Game%20v2.zip?x=1", None), "Game%20v2.zip");
         assert_eq!(file_name_from("https://x/dl", Some("attachment; filename=\"SRB2.zip\"")), "SRB2.zip");
+    }
+
+    #[test]
+    fn unknown_site_is_explained() {
+        let e = ureq::get("http://srb2.invalid/").timeout(std::time::Duration::from_secs(5)).call().unwrap_err();
+        let msg = net_error("http://srb2.invalid/", e).to_string();
+        assert!(msg.contains("srb2.invalid"), "{msg}");
+        // without a network some systems fail the lookup, others the connection: both say why
+        assert!(msg.contains("can't find") || msg.contains("can't connect"), "{msg}");
     }
 }

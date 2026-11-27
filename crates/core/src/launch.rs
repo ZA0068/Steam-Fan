@@ -63,22 +63,7 @@ pub fn log_summary(g: &Game, n: usize) -> Option<(std::path::PathBuf, Vec<String
 /// Proton, which names them `Z:\\home\\...`) or working in it. Shells are ignored: a terminal
 /// that merely mentions the folder isn't the game.
 pub fn game_running(dir: &Path) -> bool {
-    let unix = dir.to_string_lossy().into_owned();
-    let windows = format!("Z:{}", unix.replace('/', "\\")).to_lowercase();
-    let Ok(rd) = std::fs::read_dir("/proc") else { return false };
-    let me = std::process::id().to_string();
-    rd.flatten().filter(|e| e.file_name().to_string_lossy() != me).any(|e| {
-        let comm = std::fs::read_to_string(e.path().join("comm")).unwrap_or_default();
-        if matches!(comm.trim(), "bash" | "zsh" | "sh" | "fish" | "dash" | "python3" | "steam-fan" | "steam-fan-app") {
-            return false;
-        }
-        let in_dir = std::fs::read_link(e.path().join("cwd")).map_or(false, |c| c.starts_with(dir));
-        in_dir
-            || std::fs::read(e.path().join("cmdline")).map_or(false, |c| {
-                let c = String::from_utf8_lossy(&c).replace('\0', " ");
-                c.contains(&unix) || c.to_lowercase().contains(&windows)
-            })
-    })
+    crate::platform::running_in(dir)
 }
 
 /// Start a fan or non-Steam game. `cmd` is what Steam passed as %command%.
@@ -105,9 +90,14 @@ pub fn retarget(cfg: &Config, g: &Game, cmd: &[String]) -> Vec<String> {
 }
 
 pub fn run_program(cfg: &Config, db: &Db, g: &Game, cmd: &[String]) -> Result<i32> {
-    if cmd.is_empty() {
-        bail!("Steam passed no command; the launch options must end with %command%");
-    }
+    // Windows and macOS: Steam runs `steam-fan launch <id>` and passes nothing; we start the program
+    let own;
+    let cmd = if cmd.is_empty() {
+        own = crate::platform::game_command(cfg, &g.local_path(cfg).join(&g.program), g.platform)?;
+        &own[..]
+    } else {
+        cmd
+    };
     if cmd.len() == 1 && cmd[0] == "%command%" {
         bail!(
             "this line only works when Steam runs it: Steam replaces %command% with the command that starts \
@@ -144,7 +134,7 @@ pub fn run_program(cfg: &Config, db: &Db, g: &Game, cmd: &[String]) -> Result<i3
     // Proton writes what went wrong into a log; keep the last run of each game
     let mut command = Command::new(&cmd[0]);
     command.args(&cmd[1..]).current_dir(&dir);
-    if std::env::var_os("PROTON_LOG").is_none() {
+    if crate::platform::LINUX && std::env::var_os("PROTON_LOG").is_none() {
         let logdir = log_dir(g);
         let _ = std::fs::create_dir_all(&logdir);
         if let Ok(rd) = std::fs::read_dir(&logdir) {

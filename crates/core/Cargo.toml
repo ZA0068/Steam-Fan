@@ -20,6 +20,10 @@ ureq = { version = "2", features = ["json"] }
 pelite = "0.10"
 image = { version = "0.25", default-features = false, features = ["png", "ico", "tga", "bmp", "jpeg", "webp", "gif"] }
 zip = { version = "2", default-features = false, features = ["deflate", "deflate64", "lzma", "bzip2", "zstd"] }
+sysinfo = { version = "0.37", default-features = false, features = ["system"] }
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
 
 [dev-dependencies]
 tempfile = "3"

@@ -3,6 +3,8 @@
 # Easiest: run docker/deploy-nas.sh on the PC. It copies the project, fills in docker/.env,
 # builds and starts this. By hand: Container Manager > Project > Create on this folder.
 # See docs/SERVER.md.
+name: steam-fan
+
 services:
   steam-fan-server:
     container_name: steam-fan-server
@@ -10,6 +12,8 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     image: steam-fan-server:latest
+    # built here or sent from the PC: never looked for on Docker Hub
+    pull_policy: never
     restart: unless-stopped
     # Run as your DSM user so new games on the shelf belong to you, not root.
     # deploy-nas.sh fills these in (docker/.env); by hand: `id` over SSH on the NAS.

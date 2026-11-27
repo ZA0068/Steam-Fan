@@ -3,6 +3,7 @@
 #
 #   docker/deploy-nas.sh                 asks for the NAS login (e.g. zain@10.0.0.36)
 #   docker/deploy-nas.sh zain@10.0.0.36
+#   docker/deploy-nas.sh zain@10.0.0.36:12345      SSH on another port
 #   docker/deploy-nas.sh zain@10.0.0.36 --build-on-nas    compile on the NAS even if this PC has Docker
 #
 # What it does:
@@ -24,7 +25,13 @@ BUILD_ON_NAS=0
 if [[ -z "$NAS" ]]; then
     read -r -p "NAS login (user@address, e.g. zain@10.0.0.36): " NAS
 fi
-[[ "$NAS" == *@* ]] || { echo "Give it as user@address, e.g. zain@10.0.0.36"; exit 1; }
+[[ "$NAS" == *@* ]] || { echo "Give it as user@address, e.g. zain@10.0.0.36 (or zain@10.0.0.36:12345)"; exit 1; }
+# user@address:port: SSH on another port than 22
+PORT=22
+if [[ "${NAS##*@}" == *:* ]]; then
+    PORT="${NAS##*:}"
+    NAS="${NAS%:*}"
+fi
 HOST="${NAS#*@}"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -34,19 +41,29 @@ DATA=/volume1/docker/steam-fan-server
 step() { printf '\n\033[1;34m==>\033[0m %s\n' "$*"; }
 # one SSH connection for everything: the password is asked once
 SOCK="${XDG_RUNTIME_DIR:-/tmp}/steam-fan-ssh-%r@%h:%p"
-SSH=(ssh -o ControlMaster=auto -o "ControlPath=$SOCK" -o ControlPersist=120)
+SSH=(ssh -p "$PORT" -o ControlMaster=auto -o "ControlPath=$SOCK" -o ControlPersist=120)
 cleanup() { "${SSH[@]}" -O exit "$NAS" 2>/dev/null || true; }
 trap cleanup EXIT
 
 step "Looking at the NAS ($NAS)"
 INFO="$("${SSH[@]}" "$NAS" 'echo "uid=$(id -u) gid=$(id -g)"
-    for d in /volume*/*/fangames; do [ -d "$d" ] && echo "shelf=$(dirname "$d")"; done
+    for d in /volume*/*/fangames; do [ -d "$d" ] && echo "shelf=$(dirname "$d")" && echo "owner=$(stat -c "%u %g" "$d")"; done
     D=$(command -v docker 2>/dev/null || ls /usr/local/bin/docker 2>/dev/null || true); echo "docker=$D"
     [ -d /volume1/docker ] && echo "dockershare=yes" || true')"
 UID_NAS="$(sed -n 's/^uid=\([0-9]*\) .*/\1/p' <<<"$INFO")"
 GID_NAS="$(sed -n 's/.* gid=\([0-9]*\)$/\1/p' <<<"$INFO")"
 DOCKER="$(sed -n 's/^docker=//p' <<<"$INFO")"
 mapfile -t SHELVES < <(sed -n 's/^shelf=//p' <<<"$INFO")
+# the container runs as whoever owns the games, so what it adds stays yours (never root)
+OWNER="$(sed -n 's/^owner=//p' <<<"$INFO" | head -1)"
+if [[ -n "$OWNER" && "${OWNER%% *}" != 0 ]]; then
+    UID_NAS="${OWNER%% *}"
+    GID_NAS="${OWNER##* }"
+fi
+if [[ "$UID_NAS" == 0 ]]; then
+    read -r -p "The games belong to root. Which user number should the server run as (your DSM user; 'id' shows it)? " UID_NAS
+    read -r -p "And group number (often 100, 'users')? " GID_NAS
+fi
 
 [[ -n "$DOCKER" ]] || { echo "Docker isn't on the NAS: install Container Manager from the Package Center first."; exit 1; }
 grep -q dockershare=yes <<<"$INFO" || { echo "There's no 'docker' shared folder: Container Manager makes one when it's installed (/volume1/docker)."; exit 1; }
@@ -68,6 +85,8 @@ tar -C "$ROOT" -czf - \
     --exclude=./target --exclude=./ui/node_modules --exclude=./crates/desktop/gen \
     --exclude=./.git --exclude=./legacy --exclude='*.db' --exclude=./docker/.env . |
     "${SSH[@]}" "$NAS" "mkdir -p '$SRC' '$DATA' && tar -xzf - -C '$SRC'"
+# the server's data folder must belong to the user it runs as
+"${SSH[@]}" -t "$NAS" "[ \"\$(stat -c %u '$DATA')\" = '$UID_NAS' ] || sudo chown -R '$UID_NAS:$GID_NAS' '$DATA'"
 "${SSH[@]}" "$NAS" "cat > '$SRC/docker/.env'" <<EOF
 # written by deploy-nas.sh
 SF_UID=$UID_NAS
@@ -78,7 +97,10 @@ EOF
 
 if [[ $BUILD_ON_NAS -eq 0 ]] && command -v docker >/dev/null && docker info >/dev/null 2>&1; then
     step "Building the image on this PC"
-    docker build -f "$ROOT/docker/Dockerfile" -t steam-fan-server:latest "$ROOT"
+    # Podman stands in for docker on some PCs: build in Docker's format (keeps the health check)
+    FORMAT=()
+    docker --version 2>/dev/null | grep -qi podman && FORMAT=(--format docker)
+    docker build "${FORMAT[@]}" -f "$ROOT/docker/Dockerfile" -t steam-fan-server:latest "$ROOT"
     step "Sending the image to the NAS"
     docker save steam-fan-server:latest | gzip -1 | "${SSH[@]}" "$NAS" "cat > '$SRC/image.tar.gz'"
     step "Starting it (sudo asks for your NAS password)"

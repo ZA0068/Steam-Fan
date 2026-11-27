@@ -118,6 +118,8 @@ pub struct Title {
     pub versions: Vec<Game>,
     /// The version was chosen by hand, not just the newest.
     pub pinned: bool,
+    /// The newest version was marked by hand.
+    pub newest_marked: bool,
 }
 
 impl Title {
@@ -132,7 +134,7 @@ pub fn titles(games: Vec<Game>) -> Vec<Title> {
     let mut at: HashMap<String, usize> = HashMap::new();
     for g in games {
         if g.version.is_empty() {
-            out.push(Title { game: g, versions: vec![], pinned: false });
+            out.push(Title { game: g, versions: vec![], pinned: false, newest_marked: false });
             continue;
         }
         let key = g.title_id();
@@ -140,13 +142,20 @@ pub fn titles(games: Vec<Game>) -> Vec<Title> {
             Some(&i) => out[i].versions.push(g),
             None => {
                 at.insert(key, out.len());
-                out.push(Title { game: g.clone(), versions: vec![g], pinned: false });
+                out.push(Title { game: g.clone(), versions: vec![g], pinned: false, newest_marked: false });
             }
         }
     }
     for t in out.iter_mut().filter(|t| !t.versions.is_empty()) {
         shelf::sort_versions(&mut t.versions);
-        let pick = crate::artwork::info(&t.versions[0]).default_version;
+        let info = crate::artwork::info(&t.versions[0]);
+        // marked by hand as the newest: first, whatever the names and dates say
+        if let Some(i) = t.versions.iter().position(|v| !info.newest_version.is_empty() && v.version == info.newest_version) {
+            let v = t.versions.remove(i);
+            t.versions.insert(0, v);
+            t.newest_marked = true;
+        }
+        let pick = info.default_version;
         let chosen = t.versions.iter().find(|v| !pick.is_empty() && v.version == pick);
         t.pinned = chosen.is_some();
         t.game = chosen.unwrap_or(&t.versions[0]).clone();
@@ -161,6 +170,20 @@ pub fn resolve(games: &[Game], id: &str) -> Option<Game> {
     }
     let mine: Vec<Game> = games.iter().filter(|g| !g.version.is_empty() && g.title_id() == id).cloned().collect();
     titles(mine).into_iter().next().map(|t| t.game)
+}
+
+/// Mark a version as the newest (its folder name; empty: work it out again).
+/// Play uses the newest unless another version was chosen for it.
+pub fn set_newest(cfg: &Config, t: &Title, version: &str) -> Result<()> {
+    if t.versions.is_empty() {
+        bail!("{} isn't kept in versions", t.game.name);
+    }
+    if !version.is_empty() && !t.versions.iter().any(|v| v.version == version) {
+        bail!("{} has no version {version}", t.game.name);
+    }
+    let mut info = crate::artwork::info(&t.game);
+    info.newest_version = version.to_string();
+    crate::artwork::save_info(cfg, &t.game, &info)
 }
 
 /// Choose the version Play uses (its folder name; empty: always the newest).
@@ -191,12 +214,12 @@ pub fn is_installed(cfg: &Config, g: &Game) -> bool {
 /// Path to this program, for Steam launch options.
 pub fn self_exe() -> PathBuf {
     let installed = crate::config::home().join(".local/bin/steam-fan");
-    if installed.exists() {
+    if crate::platform::LINUX && installed.exists() {
         return installed;
     }
     // the window program (steam-fan-app) sits next to steam-fan, which is what Steam must run
     let me = std::env::current_exe().unwrap_or_else(|_| installed.clone());
-    let beside = me.with_file_name("steam-fan");
+    let beside = me.with_file_name(crate::platform::exe_name("steam-fan"));
     if beside.exists() { beside } else { me }
 }
 
@@ -210,6 +233,17 @@ pub fn wanted(cfg: &Config, g: &Game, icon: Option<PathBuf>) -> Option<Wanted> {
     let icon = icon.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
     match g.kind {
         Kind::Rom => Some(Wanted {
+            id: g.title_id(),
+            name: g.name.clone(),
+            exe: bin.to_string_lossy().into_owned(),
+            start_dir: local.to_string_lossy().into_owned(),
+            launch_options: steam::launch_options(&bin, &g.title_id(), false),
+            tag: g.group.clone(),
+            icon,
+            proton: false,
+        }),
+        // Windows and macOS: Steam runs Steam-Fan, which starts the program (on a Mac through Wine)
+        _ if !crate::platform::LINUX => Some(Wanted {
             id: g.title_id(),
             name: g.name.clone(),
             exe: bin.to_string_lossy().into_owned(),
@@ -881,6 +915,15 @@ mod tests {
         assert_eq!(resolve(&games, "fan:Sonic/Sonic World").unwrap().version, "Release 9");
         assert!(titles(games.clone()).iter().find(|t| t.game.name == "Sonic World").unwrap().pinned);
         assert!(set_version(&cfg, sw, "Release 99").is_err());
+        // mark Release 9 the newest by hand: first in the list
+        set_newest(&cfg, sw, "Release 9").unwrap();
+        artwork::mirror(&cfg, &sw.game);
+        let marked = titles(games.clone()).into_iter().find(|t| t.game.name == "Sonic World").unwrap();
+        assert!(marked.newest_marked);
+        assert_eq!(marked.versions[0].version, "Release 9");
+        set_newest(&cfg, sw, "").unwrap();
+        artwork::mirror(&cfg, &sw.game);
+        assert_eq!(titles(games.clone()).into_iter().find(|t| t.game.name == "Sonic World").unwrap().versions[0].version, "Release 10");
         // Steam still runs Release 10's program: Play starts Release 9's
         let r9 = resolve(&games, "fan:Sonic/Sonic World").unwrap();
         let mut r9 = r9;

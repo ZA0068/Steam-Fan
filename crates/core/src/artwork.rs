@@ -435,7 +435,7 @@ pub fn download(url: &str) -> Result<Vec<u8>> {
     };
     let r = r.map_err(|e| match e {
         ureq::Error::Status(code, _) => anyhow::anyhow!("{} ({code}{})", url, status_hint(code)),
-        e => anyhow::anyhow!("{url}: {e}"),
+        e => crate::source::net_error(url, e),
     })?;
     let mut buf = Vec::new();
     r.into_reader().take(40 << 20).read_to_end(&mut buf)?;
@@ -647,6 +647,10 @@ pub struct Info {
     /// Empty: the newest.
     #[serde(default)]
     pub default_version: String,
+    /// The version marked by hand as the newest (its folder name). Empty: worked out
+    /// from the version names and program dates.
+    #[serde(default)]
+    pub newest_version: String,
 }
 
 /// The info on this PC (copied from the shelf), or empty.
@@ -766,7 +770,7 @@ pub fn page_images(url: &str) -> Result<Vec<String>> {
         .set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) Steam-Fan/0.1")
         .timeout(std::time::Duration::from_secs(20))
         .call()
-        .context("cannot open that page")?
+        .map_err(|e| crate::source::net_error(url, e))?
         .into_string()?;
     Ok(images_in_html(url, &html))
 }

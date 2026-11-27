@@ -6,11 +6,13 @@ pub mod artwork;
 pub mod config;
 pub mod db;
 pub mod gamejolt;
+pub mod github;
 pub mod icons;
 pub mod import;
 pub mod integrity;
 pub mod launch;
 pub mod library;
+pub mod platform;
 pub mod saves;
 pub mod shelf;
 pub mod source;
@@ -37,9 +39,5 @@ pub fn now_stamp() -> String {
 
 /// A desktop notification, if `notify-send` is installed. Never fails.
 pub fn notify(title: &str, body: &str) {
-    let _ = std::process::Command::new("notify-send")
-        .args(["-a", "Steam-Fan", "-i", "steam", title, body])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
+    platform::notify(title, body)
 }

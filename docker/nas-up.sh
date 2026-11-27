@@ -13,8 +13,12 @@ else
 fi
 case "$1" in
     load)
-        "$D" load -i ../image.tar.gz
+        # Podman names its images localhost/<name>: tag it with the name compose.yaml uses
+        LOADED=$("$D" load -i ../image.tar.gz | sed -n 's/^Loaded image: //p' | tail -1)
         rm -f ../image.tar.gz
+        if [ -n "$LOADED" ] && [ "$LOADED" != "steam-fan-server:latest" ]; then
+            "$D" tag "$LOADED" steam-fan-server:latest
+        fi
         compose up -d --no-build --force-recreate
         ;;
     build)

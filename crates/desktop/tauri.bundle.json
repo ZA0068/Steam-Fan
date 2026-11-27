@@ -1,0 +1,25 @@
+{
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "externalBin": [
+      "binaries/steam-fan"
+    ],
+    "category": "Game",
+    "publisher": "Zain Ahmed",
+    "copyright": "Zain Ahmed",
+    "shortDescription": "Your game shelf, played through Steam",
+    "longDescription": "Steam-Fan keeps fan games, non-Steam games and emulator games on a shelf (a NAS or any folder, or Steam-Fan-Server) and puts them in Steam, copying a game to this computer when you press Play.",
+    "macOS": {
+      "minimumSystemVersion": "11.0"
+    },
+    "linux": {
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libgtk-3-0"
+        ]
+      }
+    }
+  }
+}
