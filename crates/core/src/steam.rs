@@ -37,6 +37,10 @@ pub fn read_manifest(path: &Path) -> Option<Manifest> {
 
 /// Is the Steam app running?
 pub fn running() -> bool {
+    // tests work on a made-up Steam folder: a real Steam on the same PC has nothing to do with it
+    if cfg!(test) {
+        return false;
+    }
     crate::platform::steam_running()
 }
 
