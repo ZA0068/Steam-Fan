@@ -210,7 +210,14 @@ impl Server {
         self.req("POST", path, 3600)
             .set("Content-Length", &size.to_string())
             .send(r)
-            .map_err(api_error)?
+            .map_err(|e| match &e {
+                // cut off while sending: the server ended it (or restarted, or the network dropped)
+                ureq::Error::Transport(t) if t.kind() == ureq::ErrorKind::Io && !cancel.is_cancelled() => anyhow::anyhow!(
+                    "the server stopped taking the file part-way. It may have refused it: the reason is in its log \
+                     (Container Manager → Container → steam-fan-server → Log, or `docker logs steam-fan-server`)"
+                ),
+                _ => api_error(e),
+            })?
             .into_json()
             .context("the server's answer isn't JSON")
     }
@@ -759,6 +766,9 @@ pub fn redownload(cfg: &Config, db: &mut Db, g: &Game, as_version: Option<&str>,
                 job: u64,
             }
             let name = f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "upload.zip".into());
+            // a quick question first, so a refusal comes with its reason before gigabytes travel
+            status("asking the server");
+            s.get_json::<serde_json::Value>(&format!("/game?id={}", q(&g.id)))?;
             status("sending the file to the server");
             let path = format!("/redownload-file?id={}&version={}&filename={}", q(&g.id), q(as_version.unwrap_or("")), q(&name));
             let st: Started = s.upload(&path, f, cancel, cb)?;

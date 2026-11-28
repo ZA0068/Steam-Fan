@@ -98,6 +98,10 @@ struct ApiError(StatusCode, String);
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        // in the container's log (Container Manager > steam-fan-server > Log), for when a PC only sees a cut connection
+        if self.0 != StatusCode::UNAUTHORIZED {
+            eprintln!("{} refused: {}", self.0.as_u16(), self.1);
+        }
         (self.0, Json(serde_json::json!({ "error": self.1 }))).into_response()
     }
 }
@@ -617,13 +621,29 @@ fn safe_name(name: &str, default: &str) -> String {
     }
 }
 
+/// Take the rest of a request body and throw it away. Answering before the PC has sent it all
+/// cuts the connection, and the PC would only see "broken pipe" instead of the reason.
+async fn drain(mut stream: axum::body::BodyDataStream) {
+    while let Some(Ok(_)) = stream.next().await {}
+}
+
 /// Stream a request body to `<data>/uploads/<n>/<name>`. Returns the file.
 async fn save_upload(data: &Path, name: &str, body: Body) -> Res<PathBuf> {
-    let dir = data.join("uploads").join(format!("{}-{}", jobs::now(), std::process::id() ^ (body_id() as u32)));
-    tokio::fs::create_dir_all(&dir).await.map_err(|e| ApiError::from(anyhow::Error::from(e)))?;
-    let p = dir.join(safe_name(name, "upload.zip"));
-    let mut f = tokio::fs::File::create(&p).await.map_err(|e| ApiError::from(anyhow::Error::from(e)))?;
     let mut stream = body.into_data_stream();
+    let dir = data.join("uploads").join(format!("{}-{}", jobs::now(), std::process::id() ^ (body_id() as u32)));
+    let p = dir.join(safe_name(name, "upload.zip"));
+    let opened = async {
+        tokio::fs::create_dir_all(&dir).await?;
+        tokio::fs::File::create(&p).await
+    }
+    .await;
+    let mut f = match opened {
+        Ok(f) => f,
+        Err(e) => {
+            drain(stream).await;
+            return Err(ApiError(StatusCode::INSUFFICIENT_STORAGE, format!("the server can't store the upload in {}: {e}", dir.display())));
+        }
+    };
     while let Some(chunk) = stream.next().await {
         let chunk = match chunk {
             Ok(c) => c,
@@ -633,7 +653,12 @@ async fn save_upload(data: &Path, name: &str, body: Body) -> Res<PathBuf> {
                 return Err(ApiError(StatusCode::BAD_REQUEST, format!("the upload was cut off: {e}")));
             }
         };
-        f.write_all(&chunk).await.map_err(|e| ApiError::from(anyhow::Error::from(e)))?;
+        if let Err(e) = f.write_all(&chunk).await {
+            drop(f);
+            let _ = tokio::fs::remove_dir_all(&dir).await;
+            drain(stream).await;
+            return Err(ApiError(StatusCode::INSUFFICIENT_STORAGE, format!("the server couldn't store the upload (disk full?): {e}")));
+        }
     }
     f.flush().await.map_err(|e| ApiError::from(anyhow::Error::from(e)))?;
     Ok(p)
@@ -788,7 +813,13 @@ struct RedownloadFileQ {
 async fn redownload_file(State(app): State<App>, Query(q): Query<RedownloadFileQ>, body: Body) -> Res<Json<Started>> {
     let cfg = app.cfg.clone();
     let id = q.id.clone();
-    let g = blocking(move || find(&cfg, &id)).await?;
+    let g = match blocking(move || find(&cfg, &id)).await {
+        Ok(g) => g,
+        Err(e) => {
+            drain(body.into_data_stream()).await;
+            return Err(e);
+        }
+    };
     let f = save_upload(&app.data, &q.filename, body).await?;
     let version = Some(q.version).filter(|v| !v.trim().is_empty());
     let r = start_redownload(&app, g, version, Some(f.clone()));
@@ -859,10 +890,17 @@ struct ImportQ {
 
 /// Add a game from an archive (or a single program) the PC uploads.
 async fn import_upload(State(app): State<App>, Query(q): Query<ImportQ>, body: Body) -> Res<Json<Started>> {
-    let kind = parse_kind(&q.kind)?;
-    if q.group.trim().is_empty() || q.name.trim().is_empty() {
-        return Err(ApiError(StatusCode::BAD_REQUEST, "group and name are needed".into()));
-    }
+    let kind = match parse_kind(&q.kind) {
+        Ok(k) if !q.group.trim().is_empty() && !q.name.trim().is_empty() => k,
+        Ok(_) => {
+            drain(body.into_data_stream()).await;
+            return Err(ApiError(StatusCode::BAD_REQUEST, "group and name are needed".into()));
+        }
+        Err(e) => {
+            drain(body.into_data_stream()).await;
+            return Err(e.into());
+        }
+    };
     let f = save_upload(&app.data, &q.filename, body).await?;
     let cfg = app.cfg.clone();
     let file = f.clone();
@@ -1100,7 +1138,13 @@ struct EmuFileQ {
 
 /// An emulator a PC sends (an AppImage, an archive), for the shelf.
 async fn emulator_file(State(app): State<App>, Query(q): Query<EmuFileQ>, body: Body) -> Res<Json<Started>> {
-    let d = emu_def(&q.id, &q.os).map_err(ApiError::from)?;
+    let d = match emu_def(&q.id, &q.os) {
+        Ok(d) => d,
+        Err(e) => {
+            drain(body.into_data_stream()).await;
+            return Err(e.into());
+        }
+    };
     let f = save_upload(&app.data, &q.name, body).await?;
     let cfg = app.cfg.clone();
     let os = q.os.clone();
