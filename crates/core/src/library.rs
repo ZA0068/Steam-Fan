@@ -536,7 +536,7 @@ pub fn install(cfg: &Config, db: &Db, g: &Game, cancel: &Cancel, cb: &mut dyn Fn
         }
         db.log(&g.id, "copy checked against its checksums");
     }
-    if matches!(g.kind, Kind::Fan | Kind::NonSteam) {
+    if matches!(g.kind, Kind::Fan | Kind::NonSteam | Kind::Rom) {
         let n = saves::restore_game_folder(cfg, g)?;
         if n > 0 {
             db.log(&g.id, &format!("{n} saved files restored"));

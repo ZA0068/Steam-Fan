@@ -13,6 +13,7 @@ pub mod integrity;
 pub mod launch;
 pub mod library;
 pub mod own;
+pub mod emulators;
 pub mod platform;
 pub mod remote;
 pub mod saves;

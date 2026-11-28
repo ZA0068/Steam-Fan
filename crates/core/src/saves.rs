@@ -62,7 +62,16 @@ pub fn backup(cfg: &Config, g: &Game) -> Result<()> {
             }
         }
         Kind::Rom => {
-            if let Some(emu) = cfg.emulator(&g.system) {
+            // saves some emulators write beside the game file (mGBA, melonDS)
+            if local.is_dir() {
+                let changed = if cfg.server_mode() {
+                    crate::remote::changed_files(cfg, g, &local, &our_files)?
+                } else {
+                    transfer::changed_files(&local, &original(cfg, g), &our_files)?
+                };
+                transfer::copy_listed(&local, &saves.join("game"), &changed)?;
+            }
+            if let Some(emu) = cfg.emulator(&g.system).filter(|e| e.uses.is_empty()) {
                 for (i, d) in emu.save_dirs.iter().enumerate() {
                     transfer::copy_newer(&expand(d), &saves.join(i.to_string()), &|_| false)?;
                 }

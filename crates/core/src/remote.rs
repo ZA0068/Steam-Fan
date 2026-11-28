@@ -564,7 +564,7 @@ pub fn install(cfg: &Config, db: &Db, g: &Game, cancel: &Cancel, cb: &mut dyn Fn
     if m.checksums {
         db.log(&g.id, "download checked against its checksums");
     }
-    if matches!(g.kind, crate::shelf::Kind::Fan | crate::shelf::Kind::NonSteam) {
+    if matches!(g.kind, crate::shelf::Kind::Fan | crate::shelf::Kind::NonSteam | crate::shelf::Kind::Rom) {
         let n = crate::saves::restore_game_folder(cfg, g)?;
         if n > 0 {
             db.log(&g.id, &format!("{n} saved files restored"));
@@ -602,37 +602,45 @@ pub fn changed_files(cfg: &Config, g: &Game, local: &Path, exclude: crate::trans
 
 /// Bring newer save files from the server into this PC's copy of the save area.
 pub fn pull_saves(cfg: &Config, g: &Game) -> Result<u64> {
+    pull_tree(cfg, &g.id, &g.save_path(cfg))
+}
+
+/// Send newer save files from this PC's copy of the save area to the server.
+pub fn push_saves(cfg: &Config, g: &Game) -> Result<u64> {
+    push_tree(cfg, &g.id, &g.save_path(cfg))
+}
+
+/// Newer files of a save area on the server (a game's, or an emulator's data) into `root`.
+pub fn pull_tree(cfg: &Config, id: &str, root: &Path) -> Result<u64> {
     let s = require(cfg)?;
-    let list: Vec<FileEntry> = s.get_json(&format!("/saves?id={}", q(&g.id)))?;
-    let root = g.save_path(cfg);
+    let list: Vec<FileEntry> = s.get_json(&format!("/saves?id={}", q(id)))?;
     let mut n = 0;
     for f in list {
         let p = root.join(&f.path);
         if secs(&p).map_or(false, |t| t >= f.mtime) {
             continue;
         }
-        s.download(&format!("/save?id={}&path={}", q(&g.id), q(&f.path)), &p, f.size, f.mtime, &Cancel::default(), &mut |_| {})?;
+        s.download(&format!("/save?id={}&path={}", q(id), q(&f.path)), &p, f.size, f.mtime, &Cancel::default(), &mut |_| {})?;
         n += 1;
     }
     Ok(n)
 }
 
-/// Send newer save files from this PC's copy of the save area to the server.
-pub fn push_saves(cfg: &Config, g: &Game) -> Result<u64> {
-    let root = g.save_path(cfg);
+/// Newer files of `root` to a save area on the server. Nothing there is ever deleted.
+pub fn push_tree(cfg: &Config, id: &str, root: &Path) -> Result<u64> {
     if !root.is_dir() {
         return Ok(0);
     }
     let s = require(cfg)?;
-    let list: Vec<FileEntry> = s.get_json(&format!("/saves?id={}", q(&g.id)))?;
+    let list: Vec<FileEntry> = s.get_json(&format!("/saves?id={}", q(id)))?;
     let theirs: HashMap<String, i64> = list.into_iter().map(|f| (f.path, f.mtime)).collect();
     let mut n = 0;
-    for e in walkdir::WalkDir::new(&root).follow_links(false) {
+    for e in walkdir::WalkDir::new(root).follow_links(false) {
         let e = e?;
         if !e.file_type().is_file() {
             continue;
         }
-        let rel = e.path().strip_prefix(&root)?.to_string_lossy().replace('\\', "/");
+        let rel = e.path().strip_prefix(root)?.to_string_lossy().replace('\\', "/");
         if rel.ends_with(".steam-fan-part") {
             continue;
         }
@@ -641,10 +649,72 @@ pub fn push_saves(cfg: &Config, g: &Game) -> Result<u64> {
             continue;
         }
         let bytes = fs::read(e.path())?;
-        s.put_bytes(&format!("/save?id={}&path={}&mtime={mine}", q(&g.id), q(&rel)), &bytes)?;
+        s.put_bytes(&format!("/save?id={}&path={}&mtime={mine}", q(id), q(&rel)), &bytes)?;
         n += 1;
     }
     Ok(n)
+}
+
+// ---------------------------------------------------------------- emulators
+
+/// Whether the server has an emulator for a system (`emu:<id>:<os>`).
+pub fn emulator_present(cfg: &Config, id: &str) -> Result<bool> {
+    let m: Result<RemoteManifest> = require(cfg)?.get_json(&format!("/manifest?id={}", q(id)));
+    Ok(m.map_or(false, |m| !m.files.is_empty()))
+}
+
+/// Download what changed of a folder the server has (an emulator) into `dst`.
+pub fn download_tree(cfg: &Config, id: &str, dst: &Path, cancel: &Cancel, cb: &mut dyn FnMut(&Progress)) -> Result<()> {
+    let s = require(cfg)?;
+    let m: RemoteManifest = s.get_json(&format!("/manifest?id={}", q(id)))?;
+    let todo: Vec<&FileEntry> = m.files.iter().filter(|f| !same(&dst.join(&f.path), f)).collect();
+    fs::create_dir_all(dst)?;
+    let mut p = Progress { total_bytes: todo.iter().map(|f| f.size).sum(), total_files: todo.len() as u64, ..Default::default() };
+    for f in &todo {
+        p.current = f.path.clone();
+        let mut on = |n: u64| {
+            p.done_bytes += n;
+            cb(&p);
+        };
+        s.download(&format!("/file?id={}&path={}", q(id), q(&f.path)), &dst.join(&f.path), f.size, f.mtime, cancel, &mut on)?;
+        p.done_files += 1;
+        cb(&p);
+    }
+    Ok(())
+}
+
+/// Which emulators the server has, for which systems.
+pub fn emulators_on_server(cfg: &Config) -> Result<Vec<crate::emulators::OnShelf>> {
+    require(cfg)?.get_json("/emulators")
+}
+
+/// Ask the server to download the newest release of an emulator for a system onto the shelf.
+pub fn emulator_get(cfg: &Config, id: &str, os: &str, cancel: &Cancel, status: &mut dyn FnMut(&str), cb: &mut dyn FnMut(&Progress)) -> Result<String> {
+    require(cfg)?.run("/emulator-get", serde_json::json!({ "id": id, "os": os }), cancel, status, cb)
+}
+
+/// Send an emulator (a file, or a folder zipped first) to the server for its shelf.
+pub fn emulator_upload(cfg: &Config, id: &str, os: &str, source: &Path, cancel: &Cancel, status: &mut dyn FnMut(&str), cb: &mut dyn FnMut(&Progress)) -> Result<String> {
+    let s = require(cfg)?;
+    let (file, temp) = if source.is_dir() {
+        status("packing the folder");
+        let z = std::env::temp_dir().join(format!("steam-fan-emulator-{}.zip", std::process::id()));
+        zip_folder(source, &z)?;
+        (z.clone(), Some(z))
+    } else {
+        (source.to_path_buf(), None)
+    };
+    let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    #[derive(Deserialize)]
+    struct Started {
+        job: u64,
+    }
+    status("sending it to the server");
+    let r: Result<Started> = s.upload(&format!("/emulator-file?id={}&os={}&name={}", q(id), q(os), q(&name)), &file, cancel, cb);
+    if let Some(t) = temp {
+        let _ = fs::remove_file(t);
+    }
+    s.wait(r?.job, cancel, status, cb)
 }
 
 // ---------------------------------------------------------------- asking the server to do things

@@ -186,6 +186,10 @@ GitHub Actions builds the app for all three systems on every push. The files are
 
 Steam entries work the same on all three systems: Steam starts `steam-fan`, and it gets the game ready first.
 
+### Emulators and Steam Link
+
+Emulators are kept on the shelf like games. **Settings → Emulators → Get** downloads them for you, or you can add one from a file. Each PC copies the one it needs and sets it up to keep everything in its own folder. Saves, save states and settings (controller layouts too) sync through the shelf. Everything, including how to play on your phone with Steam Link (at home and away, touch controls included): [docs/EMULATORS.md](docs/EMULATORS.md).
+
 ### Releases
 
 ```bash

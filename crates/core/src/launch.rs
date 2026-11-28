@@ -168,8 +168,19 @@ pub fn run_program(cfg: &Config, db: &Db, g: &Game, cmd: &[String]) -> Result<i3
     Ok(rc)
 }
 
+/// The emulator Steam-Fan keeps for a system, if the settings pick one.
+pub fn rom_emulator(cfg: &Config, g: &Game) -> Option<&'static crate::emulators::Def> {
+    cfg.emulator(&g.system).filter(|e| !e.uses.is_empty()).and_then(|e| crate::emulators::def(&e.uses))
+}
+
 /// The command line for an emulator game.
 pub fn rom_command(cfg: &Config, g: &Game) -> Result<Vec<String>> {
+    if let Some(d) = rom_emulator(cfg, g) {
+        let local = g.local_path(cfg);
+        let rom = if local.is_dir() { local.join(&g.program) } else { local.clone() };
+        let ready = crate::emulators::prepare(cfg, d, &crate::transfer::Cancel::default(), &mut |_| {}, &mut |_| {})?;
+        return Ok(crate::emulators::command(d, &ready, &rom));
+    }
     let emu = cfg.emulator(&g.system).with_context(|| format!("no emulator set for {}", g.system))?;
     if emu.command.is_empty() {
         bail!("the emulator for {} has no command in the settings", g.system);
@@ -191,8 +202,30 @@ pub fn run_rom(cfg: &Config, db: &Db, g: &Game) -> Result<i32> {
     if g.kind != Kind::Rom {
         bail!("not an emulator game");
     }
-    let cmd = rom_command(cfg, g)?;
-    if cfg.shelf_online() {
+    // an emulator Steam-Fan keeps: from the shelf, set up, its saves and settings synced
+    let kept = match rom_emulator(cfg, g) {
+        Some(d) => {
+            let ready = crate::emulators::prepare(cfg, d, &crate::transfer::Cancel::default(), &mut |_| {}, &mut |_| {})?;
+            if cfg.shelf_online() {
+                match crate::emulators::pull_data(cfg, d, &ready) {
+                    Ok(n) if n > 0 => db.log(&g.id, &format!("{n} newer {} files (saves, states, settings) taken from the shelf", d.name)),
+                    Err(e) => db.log(&g.id, &format!("{} data not taken from the shelf: {e:#}", d.name)),
+                    _ => {}
+                }
+            }
+            Some((d, ready))
+        }
+        None => None,
+    };
+    let cmd = match &kept {
+        Some((d, ready)) => {
+            let local = g.local_path(cfg);
+            let rom = if local.is_dir() { local.join(&g.program) } else { local.clone() };
+            crate::emulators::command(d, ready, &rom)
+        }
+        None => rom_command(cfg, g)?,
+    };
+    if kept.is_none() && cfg.shelf_online() {
         if let Ok(n) = saves::restore_emulator(cfg, g) {
             if n > 0 {
                 db.log(&g.id, &format!("{n} newer save files taken from the shelf"));
@@ -208,6 +241,12 @@ pub fn run_rom(cfg: &Config, db: &Db, g: &Game) -> Result<i32> {
         .with_context(|| format!("cannot start {}. Is it installed? (settings: emulator for {})", cmd[0], g.system))?;
     let rc = status.code().unwrap_or(1);
     db.log(&g.id, &format!("exited ({rc})"));
+    if let Some((d, ready)) = &kept {
+        match crate::emulators::push_data(cfg, d, ready) {
+            Ok(n) => db.log(&g.id, &format!("{n} {} files (saves, states, settings) backed up", d.name)),
+            Err(e) => db.log(&g.id, &format!("{} data not backed up: {e:#}", d.name)),
+        }
+    }
     match saves::backup(cfg, g) {
         Ok(()) => db.log(&g.id, "saves backed up"),
         Err(e) => db.log(&g.id, &format!("saves not backed up: {e:#}")),

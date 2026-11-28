@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { api, pickFile } from "./api.js";
   import Appearance from "./Appearance.svelte";
+  import Emulators from "./Emulators.svelte";
 
   let { onsaved } = $props();
   let s = $state(null);
@@ -187,23 +188,7 @@
         </div>
       </section>
 
-      <section>
-        <h3>Emulators</h3>
-        <p class="muted">One entry per system folder in <span class="mono">roms/</span>. In the command, <span class="mono">{"{rom}"}</span> is the game file and <span class="mono">{"{dir}"}</span> the game folder.</p>
-        {#each c.emulators as e, i}
-          <div class="emu">
-            <div class="grid3">
-              <label class="field"><span>System folder</span><input class="input" bind:value={e.system} /></label>
-              <label class="field"><span>Games subfolder</span><input class="input" bind:value={e.games_dir} placeholder="empty: the system folder" /></label>
-              <label class="field"><span>File types</span><input class="input" value={e.extensions.join(", ")} oninput={(ev) => (e.extensions = ev.target.value.split(",").map((x) => x.trim()).filter(Boolean))} /></label>
-            </div>
-            <label class="field"><span>Command</span><input class="input mono" value={words(e.command)} oninput={(ev) => (e.command = split(ev.target.value))} /></label>
-            <label class="field"><span>Save folders (one per line)</span><textarea class="input mono" rows="2" value={e.save_dirs.join("\n")} oninput={(ev) => (e.save_dirs = ev.target.value.split("\n").map((x) => x.trim()).filter(Boolean))}></textarea></label>
-            <button class="btn small ghost danger" onclick={() => c.emulators.splice(i, 1)}>Remove {e.system}</button>
-          </div>
-        {/each}
-        <button class="btn small" onclick={() => c.emulators.push({ system: "new", games_dir: "GAMES", extensions: [], command: [], save_dirs: [], skip: ["(UPDATE DATA)", "(DLC)", "Tools"] })}>＋ Add a system</button>
-      </section>
+      <Emulators bind:c onerror={(e) => (error = e)} />
     </div>
     <footer>
       {#if error}<span class="error">{error}</span>{/if}

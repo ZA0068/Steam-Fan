@@ -1078,6 +1078,94 @@ fn theme_save(json: String) -> Res<()> {
     std::fs::rename(&tmp, &path).map_err(err)
 }
 
+// ---------------------------------------------------------------- emulators
+
+#[derive(Serialize)]
+struct EmuDefView {
+    id: &'static str,
+    name: &'static str,
+    systems: Vec<&'static str>,
+    extensions: Vec<&'static str>,
+    page: &'static str,
+    /// systems it has a build for, and those of them downloadable from GitHub
+    builds: Vec<&'static str>,
+    github: Vec<&'static str>,
+    installed: Vec<&'static str>,
+    installed_here: bool,
+    args: Vec<&'static str>,
+}
+
+#[derive(Serialize)]
+struct EmulatorsInfo {
+    catalog: Vec<EmuDefView>,
+    on_shelf: Vec<steam_fan_core::emulators::OnShelf>,
+    os: &'static str,
+    server: bool,
+}
+
+#[tauri::command]
+async fn emulators_info(app: State<'_, App>) -> Res<EmulatorsInfo> {
+    let cfg = cfg(&app);
+    blocking(move || {
+        use steam_fan_core::emulators as emu;
+        let server = cfg.server_mode();
+        let on_shelf = if server { steam_fan_core::remote::emulators_on_server(&cfg).unwrap_or_default() } else if cfg.shelf_online() { emu::on_shelf(&cfg) } else { vec![] };
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let here = |c: &str| std::env::split_paths(&path).any(|d| d.join(c).is_file());
+        Ok(EmulatorsInfo {
+            catalog: emu::CATALOG
+                .iter()
+                .map(|d| EmuDefView {
+                    id: d.id,
+                    name: d.name,
+                    systems: d.systems.to_vec(),
+                    extensions: d.extensions.to_vec(),
+                    page: d.page,
+                    builds: d.builds.iter().map(|b| b.os).collect(),
+                    github: d.builds.iter().filter(|b| !b.repo.is_empty()).map(|b| b.os).collect(),
+                    installed: d.installed.to_vec(),
+                    installed_here: d.installed.iter().any(|c| here(c)),
+                    args: d.args.to_vec(),
+                })
+                .collect(),
+            on_shelf,
+            os: emu::this_os(),
+            server,
+        })
+    })
+    .await
+}
+
+/// Download the newest release of an emulator for a system onto the shelf.
+#[tauri::command]
+fn emulator_get(handle: tauri::AppHandle, app: State<'_, App>, id: String, os: String) -> Res<u64> {
+    let cfg = cfg(&app);
+    let d = steam_fan_core::emulators::def(&id).ok_or("no such emulator")?;
+    Ok(app.jobs.spawn(&handle, &format!("Getting {} for {os}", d.name), move |ctx: Ctx| {
+        if cfg.server_mode() {
+            steam_fan_core::remote::emulator_get(&cfg, d.id, &os, &ctx.cancel, &mut |s| ctx.status(s), &mut |p| ctx.progress(p))
+        } else {
+            steam_fan_core::emulators::get(&cfg, d, &os, &ctx.cancel, &mut |s| ctx.status(s), &mut |p| ctx.progress(p))
+        }
+    }))
+}
+
+/// Put an emulator on the shelf from a file or folder on this PC.
+#[tauri::command]
+fn emulator_add(handle: tauri::AppHandle, app: State<'_, App>, id: String, os: String, path: String) -> Res<u64> {
+    let cfg = cfg(&app);
+    let d = steam_fan_core::emulators::def(&id).ok_or("no such emulator")?;
+    Ok(app.jobs.spawn(&handle, &format!("Putting {} for {os} on the shelf", d.name), move |ctx: Ctx| {
+        let src = PathBuf::from(&path);
+        if cfg.server_mode() {
+            steam_fan_core::remote::emulator_upload(&cfg, d.id, &os, &src, &ctx.cancel, &mut |s| ctx.status(s), &mut |p| ctx.progress(p))
+        } else {
+            steam_fan_core::emulators::place(&cfg, d, &os, &src, "by hand", &ctx.cancel, &mut |p| ctx.progress(p))?;
+            Ok(format!("{} for {os} is on the shelf", d.name))
+        }
+    }))
+}
+
 // ---------------------------------------------------------------- skins
 
 /// Skins: folders with a `skin.json` (name, colors, layout, icons), an optional `style.css`,
@@ -1415,7 +1503,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             library, status, details, jobs, job_cancel, refresh, sync_steam, install, remove, archive_upload,
             refresh_art, art_search, art_options, art_set_url, art_set_file, art_remove, import_inspect,
-            import_place, add_version, tags_set, groups, info_save, screenshots_add, screenshot_remove, relocate, relocate_title, set_version, set_newest, set_separate, sync_steam_restart, verify, redownload, check_update, page_images, screenshots_add_urls, settings, settings_save, secret_set, shelf_reachable, server_pair, server_reachable, server_discover, theme_load, theme_save, skins_list, skin_load, skin_install, skin_export, skins_folder, skin_remove, open, play, human
+            import_place, add_version, tags_set, groups, info_save, screenshots_add, screenshot_remove, relocate, relocate_title, set_version, set_newest, set_separate, sync_steam_restart, verify, redownload, check_update, page_images, screenshots_add_urls, settings, settings_save, secret_set, shelf_reachable, server_pair, server_reachable, server_discover, theme_load, theme_save, emulators_info, emulator_get, emulator_add, skins_list, skin_load, skin_install, skin_export, skins_folder, skin_remove, open, play, human
         ])
         .setup(|app| {
             if let Some(w) = app.get_webview_window("main") {

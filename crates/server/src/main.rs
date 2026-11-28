@@ -34,7 +34,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use steam_fan_core::artwork::{self, Art, Info};
-use steam_fan_core::{import, integrity, launch, library, source, Config, Db, Game, Kind};
+use steam_fan_core::{emulators, import, integrity, launch, library, source, Config, Db, Game, Kind};
 use tokio::io::AsyncWriteExt;
 use tower::ServiceExt;
 use tower_http::services::ServeFile;
@@ -383,6 +383,12 @@ fn list_files(root: &Path, sums: Option<&integrity::Manifest>) -> Result<Vec<Fil
 
 async fn manifest(State(app): State<App>, Query(q): Query<IdQ>) -> Res<Json<ManifestOut>> {
     blocking(move || {
+        // an emulator for one system: `emu:<id>:<os>`
+        if let Some((emu, os)) = emulators::parse_remote_id(&q.id) {
+            let root = emulators::shelf_dir(&app.cfg, emu, os);
+            let files = if root.is_dir() { list_files(&root, None)? } else { vec![] };
+            return Ok(Json(ManifestOut { id: q.id.clone(), single_file: false, total: files.iter().map(|f| f.size).sum(), checksums: false, files }));
+        }
         let g = find(&app.cfg, &q.id)?;
         let root = g.shelf_path(&app.cfg);
         let sums = integrity::read(&integrity::manifest_path(&app.cfg, &g));
@@ -430,7 +436,11 @@ struct FileQ {
 /// One game file. Supports `Range`, so a PC can resume a cut-off download.
 async fn file(State(app): State<App>, Query(q): Query<FileQ>, req: Request) -> Res<Response> {
     let cfg = app.cfg.clone();
-    let p = blocking(move || resolve(&find(&cfg, &q.id)?.shelf_path(&cfg), &q.path)).await?;
+    let p = blocking(move || match emulators::parse_remote_id(&q.id) {
+        Some((emu, os)) => resolve(&emulators::shelf_dir(&cfg, emu, os), &q.path),
+        None => resolve(&find(&cfg, &q.id)?.shelf_path(&cfg), &q.path),
+    })
+    .await?;
     serve(p, req).await
 }
 
@@ -1043,7 +1053,67 @@ async fn entry(State(app): State<App>, Query(q): Query<IdQ>) -> Res<Json<Entry>>
 
 /// A game's save area on the shelf, for a PC to sync with.
 fn save_root(cfg: &Config, id: &str) -> Result<PathBuf> {
+    // an emulator's saves, states and settings
+    if let Some((emu, os)) = emulators::parse_remote_id(id) {
+        return Ok(emulators::shelf_data(cfg, emu, os));
+    }
     Ok(find(cfg, id)?.save_path(cfg))
+}
+
+// ---------------------------------------------------------------- emulators
+
+async fn emulators_list(State(app): State<App>) -> Res<Json<Vec<emulators::OnShelf>>> {
+    blocking(move || Ok(Json(emulators::on_shelf(&app.cfg)))).await
+}
+
+#[derive(Deserialize)]
+struct EmuReq {
+    id: String,
+    os: String,
+}
+
+fn emu_def(id: &str, os: &str) -> Result<&'static emulators::Def> {
+    let d = emulators::def(id).with_context(|| format!("no emulator called {id}"))?;
+    if !["linux", "windows", "macos"].contains(&os) {
+        bail!("no system called {os}");
+    }
+    Ok(d)
+}
+
+/// Download the newest release of an emulator for a system onto the shelf.
+async fn emulator_get(State(app): State<App>, Json(r): Json<EmuReq>) -> Res<Json<Started>> {
+    let d = emu_def(&r.id, &r.os).map_err(ApiError::from)?;
+    let cfg = app.cfg.clone();
+    let os = r.os.clone();
+    started(app.jobs.spawn(&format!("Getting {} for {os}", d.name), None, move |ctx| {
+        emulators::get(&cfg, d, &os, &ctx.cancel, &mut |s| ctx.status(s), &mut |p| ctx.progress(p))
+    }))
+}
+
+#[derive(Deserialize)]
+struct EmuFileQ {
+    id: String,
+    os: String,
+    #[serde(default)]
+    name: String,
+}
+
+/// An emulator a PC sends (an AppImage, an archive), for the shelf.
+async fn emulator_file(State(app): State<App>, Query(q): Query<EmuFileQ>, body: Body) -> Res<Json<Started>> {
+    let d = emu_def(&q.id, &q.os).map_err(ApiError::from)?;
+    let f = save_upload(&app.data, &q.name, body).await?;
+    let cfg = app.cfg.clone();
+    let os = q.os.clone();
+    let file = f.clone();
+    let r = app.jobs.spawn(&format!("Putting {} for {os} on the shelf", d.name), None, move |ctx| {
+        let res = emulators::place(&cfg, d, &os, &file, "by hand", &ctx.cancel, &mut |p| ctx.progress(p));
+        remove_upload(&file);
+        res.map(|_| format!("{} for {os} is on the shelf", d.name))
+    });
+    if r.is_err() {
+        remove_upload(&f);
+    }
+    started(r)
 }
 
 async fn saves_list(State(app): State<App>, Query(q): Query<IdQ>) -> Res<Json<Vec<FileOut>>> {
@@ -1174,6 +1244,9 @@ fn router(app: App) -> Router {
         .route("/save", get(save_get).put(save_put))
         .route("/relocate", post(relocate))
         .route("/set-separate", post(set_separate))
+        .route("/emulators", get(emulators_list))
+        .route("/emulator-get", post(emulator_get))
+        .route("/emulator-file", post(emulator_file))
         .layer(middleware::from_fn_with_state(app.clone(), require_token));
     let open = Router::new().route("/health", get(health)).route("/pair", post(pair));
     Router::new()

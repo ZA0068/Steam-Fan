@@ -57,6 +57,9 @@ pub struct Config {
 pub struct Emulator {
     /// Folder name under `roms/`, e.g. `wii`. Matched without regard to case.
     pub system: String,
+    /// An emulator Steam-Fan knows (`cemu`, `dolphin`…): kept on the shelf, set up portable,
+    /// its saves, states and settings synced. Empty: `command` below, as it is.
+    pub uses: String,
     /// Subfolder holding the games, e.g. `GAMES`. Empty: games sit directly in the system folder.
     pub games_dir: String,
     /// File types the emulator starts. The first matching file in a game folder is used.
@@ -73,6 +76,7 @@ impl Default for Emulator {
     fn default() -> Self {
         Emulator {
             system: String::new(),
+            uses: String::new(),
             games_dir: "GAMES".into(),
             extensions: vec![],
             command: vec![],
@@ -102,6 +106,7 @@ impl Default for Config {
 
 pub fn default_emulators() -> Vec<Emulator> {
     let e = |system: &str, ext: &[&str], cmd: &[&str], saves: &[&str]| Emulator {
+        uses: crate::emulators::for_system(system).map(|d| d.id.to_string()).unwrap_or_default(),
         system: system.into(),
         extensions: ext.iter().map(|s| s.to_string()).collect(),
         command: cmd.iter().map(|s| s.to_string()).collect(),
